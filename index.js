@@ -51,6 +51,7 @@ if (process.env.SESSION_SECRET === "dev-secret-cambiar-en-produccion") {
 
 // ─── Inicialización ────────────────────────────────────────────────────────────
 const app = express();
+app.set("trust proxy", 1);
 const server = http.createServer(app);
 
 // ─── CORS ─────────────────────────────────────────────────────────────────────
