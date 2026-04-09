@@ -4,7 +4,7 @@
 
 const express = require("express");
 const router = express.Router();
-const { requireAdmin, requireModerator } = require("../middleware/roles");
+const { requireAdmin, requireModerator, requireAdminToken } = require("../middleware/roles");
 const tokenManager = require("../services/tokenManager");
 const twitchApi = require("../services/twitchApi");
 
@@ -27,6 +27,11 @@ const DEFAULT_PERMISSIONS = {
   chat: true,
   stats: true,
   moderation: true,
+  eventsub: false,
+  modteam: false,
+  "chan-history": false,
+  modperms: false,
+  spotify: false,
   // Futuras pestañas se añaden aquí
 };
 
@@ -55,7 +60,7 @@ router.get("/tabs", requireAdmin, (req, res) => {
  * GET /modpermissions/all
  * Lista todos los mods con sus permisos actuales — solo admin
  */
-router.get("/all", requireAdmin, async (req, res) => {
+router.get("/all", requireModerator, async (req, res) => {
   try {
     const broadcasterId = process.env.TWITCH_BROADCASTER_ID;
     const token = await tokenManager.getBroadcasterToken();
@@ -116,7 +121,8 @@ router.get("/me", requireModerator, async (req, res) => {
  * Body: { tab: "clips", enabled: true/false }
  * Emite socket a ese mod en tiempo real
  */
-router.patch("/:modId", requireAdmin, async (req, res) => {
+router.patch("/:modId", requireModerator, async (req, res) => {
+  console.log("🔧 PATCH:", req.params.modId, "tab:", req.body.tab, "user:", req.session.user.login);
   const { modId } = req.params;
   const { tab, enabled } = req.body;
 
@@ -183,7 +189,7 @@ router.patch("/:modId", requireAdmin, async (req, res) => {
  * PUT /modpermissions/:modId/reset
  * Restaura todos los permisos a default — solo admin
  */
-router.put("/:modId/reset", requireAdmin, async (req, res) => {
+router.put("/:modId/reset", requireModerator, async (req, res) => {
   try {
     const col = await getPermCol();
     await col.updateOne(
