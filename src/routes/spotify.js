@@ -2,7 +2,7 @@
 const express = require("express");
 const router = express.Router();
 const axios = require("axios");
-const { requireAdmin, requireModerator } = require("../middleware/roles");
+const { requireAdmin, requireModerator, requireAdminToken } = require("../middleware/roles");
 
 const SPOTIFY_AUTH = "https://accounts.spotify.com";
 const SPOTIFY_API = "https://api.spotify.com/v1";
@@ -348,7 +348,7 @@ router.get("/history", requireModerator, async (req, res) => {
  * POST /spotify/resubscribe-eventsub
  * Re-registra solo el EventSub de channel points sin recrear la recompensa
  */
-router.post("/resubscribe-eventsub", requireAdmin, async (req, res) => {
+router.post("/resubscribe-eventsub", requireAdminToken, async (req, res) => {
   try {
     const col = await getCol();
     const reward = await col.findOne({ _id: "channel_reward" });
