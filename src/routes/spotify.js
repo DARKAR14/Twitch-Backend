@@ -411,37 +411,71 @@ async function createChannelPointReward(io) {
     const rewardData = {
       title: "🎵 Pedir canción (Spotify)",
       cost: parseInt(process.env.SONG_REQUEST_COST || "1000"),
-      prompt: "Pega el link de Spotify de la canción que quieres añadir a la cola. Ej: https://open.spotify.com/track/...",
+      prompt: "Pega el link de Spotify de la canción que quieres añadir a la cola.",
       is_enabled: true,
       is_user_input_required: true,
       should_redemptions_skip_request_queue: true,
     };
 
-    const res = await axios.post(
-      "https://api.twitch.tv/helix/channel_points/custom_rewards",
-      rewardData,
-      {
-        headers: {
-          Authorization: `Bearer ${broadcasterToken}`,
-          "Client-Id": process.env.TWITCH_CLIENT_ID,
-          "Content-Type": "application/json",
-        },
-        params: { broadcaster_id: broadcasterId },
+    let reward = null;
+
+    try {
+      const res = await axios.post(
+        "https://api.twitch.tv/helix/channel_points/custom_rewards",
+        rewardData,
+        {
+          headers: {
+            Authorization: `Bearer ${broadcasterToken}`,
+            "Client-Id": process.env.TWITCH_CLIENT_ID,
+            "Content-Type": "application/json",
+          },
+          params: { broadcaster_id: broadcasterId },
+        }
+      );
+      reward = res.data.data[0];
+      console.log("[Spotify] Recompensa creada:", reward.title, "→", reward.id);
+    } catch (err) {
+      if (err.response?.status === 409) {
+        // Ya existe — buscarla en Twitch
+        console.log("[Spotify] Recompensa ya existe, buscando en Twitch...");
+        const listRes = await axios.get(
+          "https://api.twitch.tv/helix/channel_points/custom_rewards",
+          {
+            headers: {
+              Authorization: `Bearer ${broadcasterToken}`,
+              "Client-Id": process.env.TWITCH_CLIENT_ID,
+            },
+            params: { broadcaster_id: broadcasterId, only_manageable_rewards: true },
+          }
+        );
+        // Buscar por título
+        reward = listRes.data.data.find((r) => r.title === rewardData.title);
+        if (!reward) {
+          console.error("[Spotify] No se encontró la recompensa existente");
+          return null;
+        }
+        console.log("[Spotify] Recompensa encontrada:", reward.title, "→", reward.id);
+      } else {
+        throw err;
       }
-    );
+    }
 
-    const reward = res.data.data[0];
-    console.log("[Spotify] Recompensa creada:", reward.title, "→", reward.id);
-
-    // Guardar el ID de la recompensa para identificar los canjes
+    // Guardar en MongoDB
     const col = await getCol();
     await col.replaceOne(
       { _id: "channel_reward" },
-      { _id: "channel_reward", reward_id: reward.id, title: reward.title, cost: reward.cost, created_at: new Date() },
+      {
+        _id: "channel_reward",
+        reward_id: reward.id,
+        title: reward.title,
+        cost: reward.cost,
+        created_at: new Date(),
+      },
       { upsert: true }
     );
+    console.log("[Spotify] channel_reward guardado en MongoDB ✓");
 
-    // Suscribir al EventSub de esta recompensa
+    // Suscribir EventSub
     if (process.env.PUBLIC_URL) {
       await subscribeToRewardEventSub(reward.id, broadcasterToken);
     }
@@ -450,12 +484,8 @@ async function createChannelPointReward(io) {
 
     return reward;
   } catch (err) {
-    // Si ya existe la recompensa (título duplicado), no es error fatal
-    if (err.response?.status === 409) {
-      console.log("[Spotify] La recompensa ya existe, buscando ID...");
-      return null;
-    }
-    console.error("[Spotify] Error creando recompensa:", err.response?.data || err.message);
+    console.error("[Spotify] Error creando/buscando recompensa:", err.response?.data || err.message);
+    return null;
   }
 }
 
