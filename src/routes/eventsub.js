@@ -5,7 +5,7 @@ const crypto = require("crypto");
 const axios = require("axios");
 const tokenManager = require("../services/tokenManager");
 const db = require("../services/db");
-const { requireAdminToken } = require("../middleware/roles");
+const { requireAdminToken, requireModerator } = require("../middleware/roles");
 const TWITCH_API = "https://api.twitch.tv/helix";
 const TWITCH_AUTH = "https://id.twitch.tv/oauth2";
 
@@ -308,7 +308,7 @@ router.post("/subscribe", async (req, res) => {
   }
 });
 
-router.delete("/unsubscribe/:id", requireAdminToken, async (req, res) => {
+router.delete("/unsubscribe/:id", requireModerator, async (req, res) => {
   if (!req.session?.user || req.session.user.id !== process.env.TWITCH_BROADCASTER_ID) {
     return res.status(403).json({ error: "Solo el admin" });
   }
