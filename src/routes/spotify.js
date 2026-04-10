@@ -344,6 +344,31 @@ router.get("/history", requireModerator, async (req, res) => {
   }
 });
 
+/**
+ * POST /spotify/resubscribe-eventsub
+ * Re-registra solo el EventSub de channel points sin recrear la recompensa
+ */
+router.post("/resubscribe-eventsub", requireAdmin, async (req, res) => {
+  try {
+    const col = await getCol();
+    const reward = await col.findOne({ _id: "channel_reward" });
+
+    if (!reward) {
+      return res.status(404).json({ error: "No hay recompensa guardada. Reconecta Spotify primero." });
+    }
+
+    await subscribeToRewardEventSub(reward.reward_id, await getValidAccessToken());
+
+    res.json({
+      success: true,
+      message: "EventSub re-registrado correctamente",
+      reward_id: reward.reward_id,
+      callback_url: `${process.env.PUBLIC_URL}/eventsub/callback`,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // ── HELPERS ────────────────────────────────────────────────────────────────────
 
