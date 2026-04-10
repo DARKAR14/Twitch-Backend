@@ -526,5 +526,49 @@ async function subscribeToRewardEventSub(rewardId, broadcasterToken) {
   }
 }
 
+async function initSpotify(io) {
+  try {
+    const tokens = await getSpotifyTokens();
+    if (!tokens) {
+      console.log("[Spotify Init] Sin tokens — el admin debe conectar Spotify");
+      return;
+    }
+
+    console.log("[Spotify Init] Tokens encontrados, verificando recompensa...");
+
+    const col = await getCol();
+    let reward = await col.findOne({ _id: "channel_reward" });
+
+    if (!reward) {
+      console.log("[Spotify Init] Sin channel_reward — creando/buscando recompensa...");
+      await createChannelPointReward(io);
+      reward = await col.findOne({ _id: "channel_reward" });
+    }
+
+    if (!reward) {
+      console.warn("[Spotify Init] No se pudo obtener la recompensa");
+      return;
+    }
+
+    console.log(`[Spotify Init] Recompensa OK: ${reward.title} (${reward.reward_id})`);
+
+    // Verificar/registrar EventSub
+    if (process.env.PUBLIC_URL) {
+      const tokenManager = require("../services/tokenManager");
+      const broadcasterToken = await tokenManager.getBroadcasterToken();
+      if (broadcasterToken) {
+        await subscribeToRewardEventSub(reward.reward_id, broadcasterToken);
+        console.log("[Spotify Init] EventSub verificado ✓");
+      } else {
+        console.warn("[Spotify Init] Sin broadcaster token — EventSub pendiente");
+      }
+    }
+  } catch (err) {
+    console.warn("[Spotify Init] Error:", err.message);
+  }
+}
+
 module.exports = router;
 module.exports.getValidAccessToken = getValidAccessToken;
+module.exports.startTrackPolling = startTrackPolling;
+module.exports.initSpotify = initSpotify;
