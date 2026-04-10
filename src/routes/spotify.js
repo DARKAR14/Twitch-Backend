@@ -348,13 +348,18 @@ router.get("/history", requireModerator, async (req, res) => {
  * POST /spotify/resubscribe-eventsub
  * Re-registra solo el EventSub de channel points sin recrear la recompensa
  */
-router.post("/resubscribe-eventsub", requireAdminToken, async (req, res) => {
+router.post("/resubscribe-eventsub", async (req, res) => {
+  // Verificar con una clave secreta simple para no exponer el endpoint
+  const { secret } = req.body;
+  if (secret !== process.env.EVENTSUB_SECRET) {
+    return res.status(403).json({ error: "No autorizado" });
+  }
+
   try {
     const col = await getCol();
     const reward = await col.findOne({ _id: "channel_reward" });
-
     if (!reward) {
-      return res.status(404).json({ error: "No hay recompensa guardada. Reconecta Spotify primero." });
+      return res.status(404).json({ error: "No hay recompensa guardada" });
     }
 
     await subscribeToRewardEventSub(reward.reward_id, await getValidAccessToken());
