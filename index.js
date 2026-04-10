@@ -242,36 +242,34 @@ async function startServer() {
   try {
     await tokenManager.loadBroadcasterToken().catch(console.error);
 
-    // ← SPOTIFY AUTO-SETUP
-    try {
-      console.log("[Startup] 🎵 Validando Spotify reward...");
-      const spotify = require("./src/routes/spotify");
-      const io = app.get("io");
-      
-      const col = await spotify.getCol();
-      const rewardDoc = await col.findOne({ _id: "channel_reward" });
-      
-      if (!rewardDoc) {
-        console.log("[Startup] Creando Spotify reward...");
-        await spotify.createChannelPointReward(io);
-      } else {
-        console.log("[Startup] Reward existe:", rewardDoc.reward_id);
-        // Re-subscribe EventSub
-        const broadcasterToken = await tokenManager.getBroadcasterToken();
-        if (broadcasterToken) {
-          await spotify.subscribeToRewardEventSub(rewardDoc.reward_id, broadcasterToken);
-          console.log("[Startup] EventSub re-suscrito ✓");
-        }
-      }
-    } catch (err) {
-      console.warn("[Startup] Spotify setup skipped:", err.message);
-    }
-
     const PORT = process.env.PORT || 3000;
 
     server.listen(PORT, () => {
-      // ... tu banner igual
-      console.log(`[Startup] 🎵 Spotify reward validado ✓`);
+      console.log("\n╔════════════════════════════════════════╗");
+      console.log("║      TWITCH BACKEND - INICIADO         ║");
+      console.log("╠════════════════════════════════════════╣");
+      console.log(`║  Puerto:    ${PORT}                         ║`);
+      console.log(`║  Entorno:   ${(process.env.NODE_ENV || "development").padEnd(28)}║`);
+      console.log(`║  Canal:     ${(process.env.TWITCH_BROADCASTER_LOGIN || "NO CONFIGURADO").padEnd(28)}║`);
+      console.log(`║  Tunnel:    ${(usingTunnel ? "Sí (HTTPS cookies)" : "No (local)").padEnd(28)}║`);
+      console.log("╠════════════════════════════════════════╣");
+      console.log("║  ENDPOINTS:                            ║");
+      console.log("║  GET  /auth/twitch         → Login     ║");
+      console.log("║  GET  /auth/me             → Usuario   ║");
+      console.log("║  GET  /channel/info        → Canal     ║");
+      console.log("║  PATCH /channel/update     → Update    ║");
+      console.log("║  GET  /clips/today         → Clips     ║");
+      console.log("║  GET  /moderation/activity → Log Mod   ║");
+      const hasToken =
+        tokenManager.broadcasterToken !== null &&
+        tokenManager.broadcasterTokenExpiry !== undefined &&
+        Date.now() < tokenManager.broadcasterTokenExpiry
+          ? "✅ Listo"
+          : "⚠️  Pendiente (admin login)";
+      console.log(`║  Broadcaster token: ${hasToken.padEnd(20)}║`);
+      console.log("╚════════════════════════════════════════╝\n");
+
+      // Iniciar keep-alive después de que el servidor esté escuchando
       startKeepAlive();
     });
   } catch (error) {

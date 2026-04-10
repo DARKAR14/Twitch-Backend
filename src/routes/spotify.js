@@ -435,7 +435,7 @@ async function createChannelPointReward(io) {
       reward = res.data.data[0];
       console.log("[Spotify] Recompensa creada:", reward.title, "→", reward.id);
     } catch (err) {
-      if (err.response?.status === 409) {
+      if (err.response?.status === 409 || err.response?.data?.message === "CREATE_CUSTOM_REWARD_DUPLICATE_REWARD") {
         // Ya existe — buscarla en Twitch
         console.log("[Spotify] Recompensa ya existe, buscando en Twitch...");
         const listRes = await axios.get(
