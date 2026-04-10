@@ -570,5 +570,4 @@ async function initSpotify(io) {
 
 module.exports = router;
 module.exports.getValidAccessToken = getValidAccessToken;
-module.exports.startTrackPolling = startTrackPolling;
 module.exports.initSpotify = initSpotify;
