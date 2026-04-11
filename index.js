@@ -218,10 +218,10 @@ initSocket(io, sessionMiddleware);
 
 // ─── Spotify monitor ──────────────────────────────────────────────────────────
 try {
-  const { startTrackPolling } = require("./src/routes/spotify");
+  const { startTrackPolling } = require("./src/services/spotify-monitor"); // ← corregir ruta
   startTrackPolling(io);
-} catch {
-  console.warn("[Spotify] spotify monitor no disponible");
+} catch (err) {
+  console.warn("[Spotify Monitor] Error al iniciar:", err.message); // ← mostrar error
 }
 
 // ─── Arranque ─────────────────────────────────────────────────────────────────
