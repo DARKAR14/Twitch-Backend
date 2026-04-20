@@ -7,7 +7,7 @@ const { requireModerator } = require("../middleware/roles");
 let lastRestart = 0;
 const COOLDOWN = 5 * 60 * 1000;
 
-router.post("/", async (req, res) => {
+router.post("/", requireModerator,async (req, res) => {
 
   try {
 
