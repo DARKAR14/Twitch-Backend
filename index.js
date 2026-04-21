@@ -30,6 +30,8 @@ const modpermissionsRoutes = require("./src/routes/modpermissions");
 const modlogRoutes = require("./src/routes/modlog");
 const spotifyRoutes = require("./src/routes/spotify");
 const vipRoutes = require("./src/routes/vip");
+const birthdaysRoutes = require("./src/routes/birthdays");
+const restart = require("./src/routes/restart");
 const ttsRoutes = require("./src/routes/tts");
 
 // ─── Validar variables de entorno ─────────────────────────────────────────────
@@ -176,7 +178,6 @@ app.use("/modpermissions", modpermissionsRoutes);
 app.use("/modlog", modlogRoutes);
 app.use("/spotify", spotifyRoutes);
 app.use("/vip", vipRoutes);
-app.use("/tts", ttsRoutes);
 
 // ─── Health check ─────────────────────────────────────────────────────────────
 app.get("/health", (req, res) => {

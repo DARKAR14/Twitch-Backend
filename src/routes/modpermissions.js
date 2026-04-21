@@ -32,6 +32,8 @@ const DEFAULT_PERMISSIONS = {
   "chan-history": false,
   modperms: false,
   spotify: false,
+  vip: false,
+  birthdays: false,
   // Futuras pestañas se añaden aquí
 };
 
@@ -46,6 +48,8 @@ const ALL_TABS = [
   { id: "chan-history", label: "Historial cambios", icon: "🕐", isAdminTab: true },
   { id: "modperms", label: "Panel permisos", icon: "🔑", isAdminTab: true },
   { id: "spotify", label: "Spotify", icon: "🎵", isAdminTab: false },
+  { id: "vip", label: "VIP", icon: "👑", isAdminTab: false },
+  { id: "birthdays", label: "Cumpleaños", icon: "🎂", isAdminTab: false },
 ];
 
 /**
