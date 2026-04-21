@@ -30,6 +30,7 @@ const modpermissionsRoutes = require("./src/routes/modpermissions");
 const modlogRoutes = require("./src/routes/modlog");
 const spotifyRoutes = require("./src/routes/spotify");
 const vipRoutes = require("./src/routes/vip");
+const ttsRoutes = require("./src/routes/tts");
 
 // ─── Validar variables de entorno ─────────────────────────────────────────────
 const REQUIRED_ENV = [
@@ -54,7 +55,10 @@ app.set("trust proxy", 1);
 // ─── CORS ─────────────────────────────────────────────────────────────────────
 function getAllowedOrigins() {
   const raw = process.env.FRONTEND_URL || "http://localhost:5173";
-  return raw.split(",").map((u) => u.trim()).filter(Boolean);
+  return raw
+    .split(",")
+    .map((u) => u.trim())
+    .filter(Boolean);
 }
 
 function corsOriginHandler(origin, callback) {
@@ -95,21 +99,26 @@ const sessionMiddleware = session({
     secure: process.env.NODE_ENV === "production" || usingTunnel,
     httpOnly: true,
     maxAge: 24 * 60 * 60 * 1000,
-    sameSite: process.env.NODE_ENV === "production" || usingTunnel ? "none" : "lax",
+    sameSite:
+      process.env.NODE_ENV === "production" || usingTunnel ? "none" : "lax",
   },
 });
 
 // ─── Middlewares globales ──────────────────────────────────────────────────────
-app.use(helmet({
-  contentSecurityPolicy: process.env.NODE_ENV === "production",
-}));
+app.use(
+  helmet({
+    contentSecurityPolicy: process.env.NODE_ENV === "production",
+  }),
+);
 
-app.use(cors({
-  origin: corsOriginHandler,
-  credentials: true,
-  methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
-  allowedHeaders: ["Content-Type", "Authorization"],
-}));
+app.use(
+  cors({
+    origin: corsOriginHandler,
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  }),
+);
 
 app.use(morgan(process.env.NODE_ENV === "production" ? "combined" : "dev"));
 
@@ -128,18 +137,26 @@ app.use(passport.initialize());
 app.use(passport.session());
 
 // ─── Rate Limiting ────────────────────────────────────────────────────────────
-app.use(rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 100,
-  message: { error: "Demasiadas peticiones, espera un momento" },
-  skip: (req) => req.path === "/eventsub/callback" || req.path === "/health" || req.path === "/keep-alive",
-}));
+app.use(
+  rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 100,
+    message: { error: "Demasiadas peticiones, espera un momento" },
+    skip: (req) =>
+      req.path === "/eventsub/callback" ||
+      req.path === "/health" ||
+      req.path === "/keep-alive",
+  }),
+);
 
-app.use("/auth/twitch", rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 20,
-  message: { error: "Demasiados intentos de login" },
-}));
+app.use(
+  "/auth/twitch",
+  rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 20,
+    message: { error: "Demasiados intentos de login" },
+  }),
+);
 
 // ─── io accesible en rutas ────────────────────────────────────────────────────
 app.set("io", io);
@@ -159,6 +176,7 @@ app.use("/modpermissions", modpermissionsRoutes);
 app.use("/modlog", modlogRoutes);
 app.use("/spotify", spotifyRoutes);
 app.use("/vip", vipRoutes);
+app.use("/tts", ttsRoutes);
 
 // ─── Health check ─────────────────────────────────────────────────────────────
 app.get("/health", (req, res) => {
@@ -179,14 +197,17 @@ app.get("/keep-alive", (req, res) => {
 function startKeepAlive() {
   if (process.env.NODE_ENV !== "production" || !process.env.PUBLIC_URL) return;
   const url = `${process.env.PUBLIC_URL.replace(/\/$/, "")}/keep-alive`;
-  setInterval(async () => {
-    try {
-      await axios.get(url, { timeout: 10000 });
-      console.log(`[KeepAlive] ✓ ${new Date().toLocaleTimeString()}`);
-    } catch (err) {
-      console.warn("[KeepAlive] ✗", err.message);
-    }
-  }, 14 * 60 * 1000);
+  setInterval(
+    async () => {
+      try {
+        await axios.get(url, { timeout: 10000 });
+        console.log(`[KeepAlive] ✓ ${new Date().toLocaleTimeString()}`);
+      } catch (err) {
+        console.warn("[KeepAlive] ✗", err.message);
+      }
+    },
+    14 * 60 * 1000,
+  );
   console.log(`[KeepAlive] Iniciado — ping cada 14min`);
 }
 
@@ -237,9 +258,15 @@ async function startServer() {
       console.log("║      TWITCH BACKEND - INICIADO         ║");
       console.log("╠════════════════════════════════════════╣");
       console.log(`║  Puerto:    ${PORT}                         ║`);
-      console.log(`║  Entorno:   ${(process.env.NODE_ENV || "development").padEnd(28)}║`);
-      console.log(`║  Canal:     ${(process.env.TWITCH_BROADCASTER_LOGIN || "NO CONFIGURADO").padEnd(28)}║`);
-      console.log(`║  Tunnel:    ${(usingTunnel ? "Sí (HTTPS cookies)" : "No (local)").padEnd(28)}║`);
+      console.log(
+        `║  Entorno:   ${(process.env.NODE_ENV || "development").padEnd(28)}║`,
+      );
+      console.log(
+        `║  Canal:     ${(process.env.TWITCH_BROADCASTER_LOGIN || "NO CONFIGURADO").padEnd(28)}║`,
+      );
+      console.log(
+        `║  Tunnel:    ${(usingTunnel ? "Sí (HTTPS cookies)" : "No (local)").padEnd(28)}║`,
+      );
       console.log("╠════════════════════════════════════════╣");
       const hasToken =
         tokenManager.broadcasterToken !== null &&

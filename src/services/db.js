@@ -3,7 +3,8 @@
 const { MongoClient } = require("mongodb");
 const { v4: uuidv4 } = require("uuid");
 
-const MONGO_URL = process.env.MONGO_URL || "mongodb://localhost:27017/twitchbot";
+const MONGO_URL =
+  process.env.MONGO_URL || "mongodb://localhost:27017/twitchbot";
 let _db = null;
 
 async function getDB() {
@@ -26,13 +27,24 @@ async function getDb() {
   const followersCol = await col("followers");
   const sessionsCol = await col("mod_sessions");
 
-  const bans = await bansCol.find({}).sort({ created_at: -1 }).limit(500).toArray();
-  const followers = await followersCol.find({}).sort({ created_at: -1 }).limit(500).toArray();
+  const bans = await bansCol
+    .find({})
+    .sort({ created_at: -1 })
+    .limit(500)
+    .toArray();
+  const followers = await followersCol
+    .find({})
+    .sort({ created_at: -1 })
+    .limit(500)
+    .toArray();
 
   const sessionsDocs = await sessionsCol.find({}).toArray();
   const mod_sessions = {};
   sessionsDocs.forEach((s) => {
-    mod_sessions[s.user_id] = { total_minutes: s.total_minutes, last_ping: s.last_ping };
+    mod_sessions[s.user_id] = {
+      total_minutes: s.total_minutes,
+      last_ping: s.last_ping,
+    };
   });
 
   return {
@@ -44,7 +56,10 @@ async function getDb() {
 // ── BANS ───────────────────────────────────────────────────────────────────────
 async function saveBan(ban) {
   const c = await col("bans");
-  const exists = await c.findOne({ user_id: ban.user_id, created_at: ban.created_at });
+  const exists = await c.findOne({
+    user_id: ban.user_id,
+    created_at: ban.created_at,
+  });
   if (exists) return null;
 
   const entry = {
@@ -67,13 +82,21 @@ async function saveBan(ban) {
 async function getBans({ limit = 50, offset = 0, type } = {}) {
   const c = await col("bans");
   const filter = type ? { type } : {};
-  return c.find(filter).sort({ created_at: -1 }).skip(offset).limit(limit).toArray();
+  return c
+    .find(filter)
+    .sort({ created_at: -1 })
+    .skip(offset)
+    .limit(limit)
+    .toArray();
 }
 
 // ── FOLLOWERS ─────────────────────────────────────────────────────────────────
 async function saveFollower(follower) {
   const c = await col("followers");
-  const exists = await c.findOne({ user_id: follower.user_id, followed_at: follower.followed_at });
+  const exists = await c.findOne({
+    user_id: follower.user_id,
+    followed_at: follower.followed_at,
+  });
   if (exists) return null;
 
   const entry = {
@@ -96,12 +119,23 @@ async function saveFollower(follower) {
 
 async function getFollowers({ limit = 50, offset = 0 } = {}) {
   const c = await col("followers");
-  return c.find({}).sort({ created_at: -1 }).skip(offset).limit(limit).toArray();
+  return c
+    .find({})
+    .sort({ created_at: -1 })
+    .skip(offset)
+    .limit(limit)
+    .toArray();
 }
 
 // ── HISTORIAL DE CANAL ────────────────────────────────────────────────────────
 // Se guarda por mes — al cambiar de mes borra el anterior automáticamente
-async function saveChannelChange({ title, game_name, game_id, changed_by, changed_by_role }) {
+async function saveChannelChange({
+  title,
+  game_name,
+  game_id,
+  changed_by,
+  changed_by_role,
+}) {
   const c = await col("channel_history");
   const now = new Date();
   const monthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
@@ -147,7 +181,11 @@ async function addNotification({ type, message }) {
   // Mantener solo las últimas 100
   const total = await c.countDocuments();
   if (total > 100) {
-    const oldest = await c.find({}).sort({ created_at: 1 }).limit(total - 100).toArray();
+    const oldest = await c
+      .find({})
+      .sort({ created_at: 1 })
+      .limit(total - 100)
+      .toArray();
     await c.deleteMany({ _id: { $in: oldest.map((d) => d._id) } });
   }
 
@@ -170,8 +208,11 @@ async function updateModSession(userId, minutesToAdd = 5) {
   const c = await col("mod_sessions");
   await c.updateOne(
     { user_id: userId },
-    { $inc: { total_minutes: minutesToAdd }, $set: { last_ping: new Date().toISOString() } },
-    { upsert: true }
+    {
+      $inc: { total_minutes: minutesToAdd },
+      $set: { last_ping: new Date().toISOString() },
+    },
+    { upsert: true },
   );
 }
 
@@ -223,9 +264,91 @@ async function markSpotifyRequestPlayed(requestId) {
   const c = await col("spotify_requests");
   const result = await c.updateOne(
     { id: requestId },
-    { $set: { status: "played", played_at: new Date().toISOString() } }
+    { $set: { status: "played", played_at: new Date().toISOString() } },
   );
   return result.modifiedCount > 0;
+}
+
+// ── TTS MESSAGES ──────────────────────────────────────────────────────────────
+async function saveTTSMessage(data) {
+  const c = await col("tts_messages");
+  const entry = {
+    id: data.id || uuidv4(),
+    usuario: data.usuario,
+    mensaje: data.mensaje,
+    idioma: data.idioma || "es",
+    audioBase64: data.audioBase64 || null,
+    audioHash: data.audioHash || null,
+    reproduccion: false,
+    createdAt: new Date().toISOString(),
+  };
+
+  const result = await c.insertOne(entry);
+  return { ...entry, _id: result.insertedId };
+}
+
+async function getTTSQueue({ limit = 50, offset = 0 } = {}) {
+  const c = await col("tts_messages");
+  return c
+    .find({ reproduccion: false })
+    .sort({ createdAt: 1 })
+    .skip(offset)
+    .limit(limit)
+    .toArray();
+}
+
+async function getTTSMessage(id) {
+  const c = await col("tts_messages");
+  return c.findOne({ id });
+}
+
+async function markTTSAsPlaying(id) {
+  const c = await col("tts_messages");
+  const result = await c.updateOne(
+    { id },
+    { $set: { reproduccion: true, playedAt: new Date().toISOString() } },
+  );
+  return result.modifiedCount > 0;
+}
+
+async function deleteTTSMessage(id) {
+  const c = await col("tts_messages");
+  const result = await c.deleteOne({ id });
+  return result.deletedCount > 0;
+}
+
+async function cleanOldTTSMessages(daysOld = 7) {
+  const c = await col("tts_messages");
+  const cutoffDate = new Date(Date.now() - daysOld * 24 * 60 * 60 * 1000);
+  const result = await c.deleteMany({
+    createdAt: { $lt: cutoffDate.toISOString() },
+  });
+  return result.deletedCount;
+}
+
+async function getTTSStats() {
+  const c = await col("tts_messages");
+  const total = await c.countDocuments();
+  const played = await c.countDocuments({ reproduccion: true });
+  const pending = total - played;
+  const byLang = await c
+    .aggregate([
+      { $match: { reproduccion: false } },
+      { $group: { _id: "$idioma", count: { $sum: 1 } } },
+    ])
+    .toArray();
+
+  const porIdioma = {};
+  byLang.forEach((item) => {
+    porIdioma[item._id] = item.count;
+  });
+
+  return {
+    total,
+    played,
+    pending,
+    porIdioma,
+  };
 }
 
 module.exports = {
@@ -247,4 +370,11 @@ module.exports = {
   saveSpotifyRequest,
   getPendingSpotifyRequestByTrack,
   markSpotifyRequestPlayed,
+  saveTTSMessage,
+  getTTSQueue,
+  getTTSMessage,
+  markTTSAsPlaying,
+  deleteTTSMessage,
+  cleanOldTTSMessages,
+  getTTSStats,
 };
