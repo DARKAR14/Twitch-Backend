@@ -1,5 +1,3 @@
-// Script para resetear permisos de admin tabs a false en MongoDB
-// Ejecutar UNA VEZ: node fix-mod-permissions.js
 require("dotenv").config();
 const { MongoClient } = require("mongodb");
 
@@ -17,13 +15,19 @@ async function fix() {
     let changed = false;
     const perms = doc.permissions || {};
 
-    // Si no tiene el campo de admin tab, añadirlo como false
+    // Admin tabs en false si no existen
     for (const tab of ADMIN_TABS) {
       if (perms[tab] === undefined) {
         perms[tab] = false;
         changed = true;
       }
     }
+
+    // Tabs nuevos — true por defecto
+    if (perms.birthdays === undefined) { perms.birthdays = true;  changed = true; }
+    if (perms.tts       === undefined) { perms.tts       = true;  changed = true; }
+    if (perms.spotify   === undefined) { perms.spotify   = false; changed = true; }
+    if (perms.vip       === undefined) { perms.vip       = false; changed = true; }
 
     if (changed) {
       await col.updateOne({ _id: doc._id }, { $set: { permissions: perms } });
@@ -33,7 +37,7 @@ async function fix() {
     }
   }
 
-  console.log("\nListo. Admin tabs que no estaban definidas ahora son false.");
+  console.log("\nListo. Recarga el navegador.");
   await client.close();
 }
 
