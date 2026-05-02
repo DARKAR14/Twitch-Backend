@@ -52,6 +52,7 @@ const ALL_TABS = [
   { id: "spotify", label: "Spotify", icon: "🎵", isAdminTab: false },
   { id: "vip", label: "VIP", icon: "👑", isAdminTab: false },
   { id: "birthdays", label: "Cumpleaños", icon: "🎂", isAdminTab: false },
+  { id: "tts",          label: "TTS Bot",          icon: "🎙️" },
 ];
 
 /**
