@@ -34,6 +34,7 @@ const DEFAULT_PERMISSIONS = {
   spotify: false,
   vip: false,
   birthdays: false,
+  tts: true,
   
   // Futuras pestañas se añaden aquí
 };
