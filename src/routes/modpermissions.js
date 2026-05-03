@@ -34,6 +34,7 @@ const DEFAULT_PERMISSIONS = {
   spotify: false,
   vip: false,
   birthdays: false,
+  tts: true,
   // Futuras pestañas se añaden aquí
 };
 
@@ -50,6 +51,7 @@ const ALL_TABS = [
   { id: "spotify", label: "Spotify", icon: "🎵", isAdminTab: false },
   { id: "vip", label: "VIP", icon: "👑", isAdminTab: false },
   { id: "birthdays", label: "Cumpleaños", icon: "🎂", isAdminTab: false },
+  { id: "tts", label: "TTS Bot", icon: "🎤", isAdminTab: false },
 ];
 
 /**
