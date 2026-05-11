@@ -147,7 +147,8 @@ app.use(
     skip: (req) =>
       req.path === "/eventsub/callback" ||
       req.path === "/health" ||
-      req.path === "/keep-alive",
+      req.path === "/keep-alive" ||
+      req.path === "/spotify/overlay",
   }),
 );
 
