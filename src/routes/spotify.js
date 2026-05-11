@@ -173,13 +173,7 @@ router.get("/overlay", async (req, res) => {
     if (!tokens) return res.json({ connected: false, current: null });
 
     const token = await getValidAccessToken();
-    const currentRes = await axios.get(`${SPOTIFY_API}/me/player/currently-playing`, {
-      headers: buildHeaders(token),
-    });
-
-    const current = currentRes.data?.item
-      ? formatTrack(currentRes.data.item, currentRes.data)
-      : null;
+    const current = await getCurrentTrackForOverlay(token);
 
     res.json({ connected: true, current });
   } catch (err) {
@@ -416,6 +410,29 @@ function formatTrack(track, playerData = null) {
     is_playing: playerData?.is_playing,
     progress_ms: playerData?.progress_ms,
   };
+}
+
+async function getCurrentTrackForOverlay(token) {
+  const headers = buildHeaders(token);
+
+  const attempts = [
+    () => axios.get(`${SPOTIFY_API}/me/player/currently-playing`, { headers }),
+    () => axios.get(`${SPOTIFY_API}/me/player`, { headers }),
+    () => axios.get(`${SPOTIFY_API}/me/player/queue`, { headers }),
+  ];
+
+  for (const request of attempts) {
+    const response = await request().catch((err) => {
+      if (err.response?.status === 204) return null;
+      throw err;
+    });
+
+    const data = response?.data;
+    const item = data?.item || data?.currently_playing;
+    if (item) return formatTrack(item, data);
+  }
+
+  return null;
 }
 
 function msToLabel(ms) {

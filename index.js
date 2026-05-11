@@ -134,7 +134,7 @@ app.use(rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 100,
   message: { error: "Demasiadas peticiones, espera un momento" },
-  skip: (req) => req.path === "/eventsub/callback" || req.path === "/health" || req.path === "/keep-alive",
+  skip: (req) => req.path === "/eventsub/callback" || req.path === "/health" || req.path === "/keep-alive" || req.path === "/spotify/overlay",
 }));
 
 app.use("/auth/twitch", rateLimit({
