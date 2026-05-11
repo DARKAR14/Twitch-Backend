@@ -164,6 +164,31 @@ router.post("/disconnect", requireAdmin, async (req, res) => {
 });
 
 /**
+ * GET /spotify/overlay
+ * Endpoint público para OBS/browser source. No usa sesión de Twitch.
+ */
+router.get("/overlay", async (req, res) => {
+  try {
+    const tokens = await getSpotifyTokens();
+    if (!tokens) return res.json({ connected: false, current: null });
+
+    const token = await getValidAccessToken();
+    const currentRes = await axios.get(`${SPOTIFY_API}/me/player/currently-playing`, {
+      headers: buildHeaders(token),
+    });
+
+    const current = currentRes.data?.item
+      ? formatTrack(currentRes.data.item, currentRes.data)
+      : null;
+
+    res.json({ connected: true, current });
+  } catch (err) {
+    console.error("[Spotify Overlay]", err.response?.data || err.message);
+    res.status(500).json({ connected: false, current: null, error: err.response?.data?.error?.message || err.message });
+  }
+});
+
+/**
  * GET /spotify/status
  * Estado de la conexión + canción actual
  */
