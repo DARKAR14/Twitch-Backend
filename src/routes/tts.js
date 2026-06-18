@@ -8,6 +8,7 @@ const {
   getTTSStats,
   cleanOldTTSMessages,
 } = require("../services/db");
+const { censurar } = require("../utils/censorship");
 
 const router = express.Router();
 
@@ -20,10 +21,13 @@ router.post("/", async (req, res) => {
       return res.status(400).json({ error: "usuario y mensaje requeridos" });
     }
 
+    // Doble validación: Censura antes de guardar
+    const mensajeLimpio = censurar(mensaje);
+
     const ttsMsg = await saveTTSMessage({
       id,
       usuario,
-      mensaje,
+      mensaje: mensajeLimpio,
       idioma: idioma || "es",
       audioBase64,
       audioHash,
