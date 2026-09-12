@@ -5,16 +5,20 @@ const crypto = require("crypto");
 const axios = require("axios");
 const tokenManager = require("../services/tokenManager");
 const db = require("../services/db");
-const { requireAdminToken, requireModerator } = require("../middleware/roles");
+const { requireAdmin, requirePermission } = require("../middleware/roles");
 const TWITCH_API = "https://api.twitch.tv/helix";
-const TWITCH_AUTH = "https://id.twitch.tv/oauth2";
+const MAX_EVENT_AGE_MS = 10 * 60 * 1000;
 
 function verifySignature(req) {
   const secret = process.env.EVENTSUB_SECRET;
-  if (!secret) return true;
+  if (!secret) return false;
 
   const msgId = req.headers["twitch-eventsub-message-id"] || "";
   const timestamp = req.headers["twitch-eventsub-message-timestamp"] || "";
+  const timestampMs = Date.parse(timestamp);
+  if (!Number.isFinite(timestampMs) || Math.abs(Date.now() - timestampMs) > MAX_EVENT_AGE_MS) {
+    return false;
+  }
   const body = req.rawBody || "";
   const hmacMessage = msgId + timestamp + body;
 
@@ -23,9 +27,12 @@ function verifySignature(req) {
     crypto.createHmac("sha256", secret).update(hmacMessage).digest("hex");
 
   const receivedSig = req.headers["twitch-eventsub-message-signature"] || "";
+  const expectedBuffer = Buffer.from(hmac, "utf-8");
+  const receivedBuffer = Buffer.from(receivedSig, "utf-8");
+  if (expectedBuffer.length !== receivedBuffer.length) return false;
   return crypto.timingSafeEqual(
-    Buffer.from(hmac, "utf-8"),
-    Buffer.from(receivedSig, "utf-8")
+    expectedBuffer,
+    receivedBuffer
   );
 }
 
@@ -170,7 +177,13 @@ async function handleEvent(type, event, io) {
         await axios.post(
           `${baseUrl}/spotify/add`,
           { url: userInput, requested_by: userName },
-          { headers: { "Content-Type": "application/json" }, timeout: 10000 }
+          {
+            headers: {
+              "Content-Type": "application/json",
+              "X-Internal-Secret": process.env.INTERNAL_API_SECRET || process.env.EVENTSUB_SECRET,
+            },
+            timeout: 10000,
+          }
         );
         console.log(`[EventSub] ✓ Canción añadida por ${userName}`);
         io?.to("moderators").emit("notification:new", {
@@ -189,10 +202,9 @@ async function handleEvent(type, event, io) {
   }
 }
 
-router.get("/status", async (req, res) => {
-  if (!req.session?.user) return res.status(401).json({ error: "No autenticado" });
+router.get("/status", requirePermission("eventsub"), async (req, res) => {
   try {
-    const appToken = await getAppToken();
+    const appToken = await tokenManager.getAppToken();
     const response = await axios.get(`${TWITCH_API}/eventsub/subscriptions`, {
       headers: { Authorization: `Bearer ${appToken}`, "Client-Id": process.env.TWITCH_CLIENT_ID },
     });
@@ -208,12 +220,7 @@ router.get("/status", async (req, res) => {
   }
 });
 
-router.post("/subscribe", async (req, res) => {
-  if (!req.session?.user) return res.status(401).json({ error: "No autenticado" });
-  if (req.session.user.id !== process.env.TWITCH_BROADCASTER_ID) {
-    return res.status(403).json({ error: "Solo el admin puede suscribirse a eventos" });
-  }
-
+router.post("/subscribe", requireAdmin, async (req, res) => {
   if (!process.env.PUBLIC_URL) {
     return res.status(400).json({
       error: "PUBLIC_URL no configurado.",
@@ -224,11 +231,12 @@ router.post("/subscribe", async (req, res) => {
   // Limpiar / del final si existe
   const publicUrl = process.env.PUBLIC_URL.replace(/\/$/, "");
   const callbackUrl = `${publicUrl}/eventsub/callback`;
-  const secret = process.env.EVENTSUB_SECRET || "default-secret-cambiar";
+  const secret = process.env.EVENTSUB_SECRET;
+  if (!secret) return res.status(503).json({ error: "EVENTSUB_SECRET no configurado" });
   const broadcasterId = process.env.TWITCH_BROADCASTER_ID;
 
   try {
-    const appToken = await getAppToken();
+    const appToken = await tokenManager.getAppToken();
     const broadcasterToken = await tokenManager.getBroadcasterToken();
     const results = [];
 
@@ -266,10 +274,6 @@ router.post("/subscribe", async (req, res) => {
     ];
 
     for (const sub of subscriptions) {
-      const token = sub.needsBroadcasterToken && broadcasterToken
-        ? broadcasterToken
-        : appToken;
-
       if (sub.needsBroadcasterToken && !broadcasterToken) {
         results.push({
           type: sub.type,
@@ -280,9 +284,14 @@ router.post("/subscribe", async (req, res) => {
       }
 
       try {
-        const r = await axios.post(
+        const createSubscription = (token) => axios.post(
           `${TWITCH_API}/eventsub/subscriptions`,
-          { ...sub, transport: { method: "webhook", callback: callbackUrl, secret } },
+          {
+            type: sub.type,
+            version: sub.version,
+            condition: sub.condition,
+            transport: { method: "webhook", callback: callbackUrl, secret },
+          },
           {
             headers: {
               Authorization: `Bearer ${token}`,
@@ -291,6 +300,9 @@ router.post("/subscribe", async (req, res) => {
             },
           }
         );
+        const r = sub.needsBroadcasterToken
+          ? await tokenManager.withBroadcasterToken(createSubscription)
+          : await createSubscription(appToken);
         results.push({ type: sub.type, status: "created", id: r.data.data[0]?.id });
       } catch (err) {
         const msg = err.response?.data?.message || err.message;
@@ -308,31 +320,21 @@ router.post("/subscribe", async (req, res) => {
   }
 });
 
-router.delete("/unsubscribe/:id", requireModerator, async (req, res) => {
-  if (!req.session?.user || req.session.user.id !== process.env.TWITCH_BROADCASTER_ID) {
-    return res.status(403).json({ error: "Solo el admin" });
+router.delete("/unsubscribe/:id", requireAdmin, async (req, res) => {
+  if (!/^[a-zA-Z0-9-]{1,128}$/.test(req.params.id)) {
+    return res.status(400).json({ error: "ID de suscripción inválido" });
   }
   try {
-    const appToken = await getAppToken();
-    await axios.delete(`${TWITCH_API}/eventsub/subscriptions?id=${req.params.id}`, {
+    const appToken = await tokenManager.getAppToken();
+    await axios.delete(`${TWITCH_API}/eventsub/subscriptions`, {
       headers: { Authorization: `Bearer ${appToken}`, "Client-Id": process.env.TWITCH_CLIENT_ID },
+      params: { id: req.params.id },
     });
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: "Error al cancelar suscripción" });
   }
 });
-
-async function getAppToken() {
-  const res = await axios.post(`${TWITCH_AUTH}/token`, null, {
-    params: {
-      client_id: process.env.TWITCH_CLIENT_ID,
-      client_secret: process.env.TWITCH_CLIENT_SECRET,
-      grant_type: "client_credentials",
-    },
-  });
-  return res.data.access_token;
-}
 
 module.exports = router;
 module.exports.handleEvent = handleEvent;

@@ -1,57 +1,29 @@
-// src/middleware/roles.js
-// Middleware para verificar roles: admin (broadcaster) y moderador
+const { getRequestUser } = require("../services/apiAuth");
 
-const twitchApi = require("../services/twitchApi");
-
-/**
- * Cache de moderadores para no llamar la API en cada request
- * Se refresca cada 5 minutos
- */
+// Se conserva la interfaz del cache para no romper consumidores existentes.
 const modCache = {
   ids: new Set(),
   lastFetch: 0,
-  TTL: 5 * 60 * 1000, // 5 minutos
+  TTL: 5 * 60 * 1000,
 };
 
-async function refreshModCache(broadcasterId, accessToken) {
-  const now = Date.now();
-  if (now - modCache.lastFetch < modCache.TTL) return;
-
-  try {
-    const mods = await twitchApi.getModerators(broadcasterId, accessToken);
-    modCache.ids = new Set(mods.map((m) => m.user_id));
-    modCache.lastFetch = now;
-
-    // IDs extras del .env
-    const extra = (process.env.EXTRA_MOD_IDS || "").split(",").filter(Boolean);
-    extra.forEach((id) => modCache.ids.add(id.trim()));
-  } catch (err) {
-    console.error("[RoleMiddleware] Error refreshing mod cache:", err.message);
-  }
+function unauthorizedResponse(req, res) {
+  return res.status(401).json({
+    error: req.authError ? "Token Bearer inválido o vencido." : "No autenticado. Inicia sesión con Twitch.",
+  });
 }
 
-/**
- * Middleware: el usuario debe estar autenticado
- */
 function requireAuth(req, res, next) {
-  if (!req.session?.user) {
-    return res.status(401).json({ error: "No autenticado. Inicia sesión con Twitch." });
-  }
+  const user = getRequestUser(req);
+  if (!user) return unauthorizedResponse(req, res);
   next();
 }
 
-/**
- * Middleware: el usuario debe ser el broadcaster (administrador)
- */
 function requireAdmin(req, res, next) {
-  if (!req.session?.user) {
-    return res.status(401).json({ error: "No autenticado." });
-  }
+  const user = getRequestUser(req);
+  if (!user) return unauthorizedResponse(req, res);
 
-  const user = req.session.user;
-  const broadcasterId = process.env.TWITCH_BROADCASTER_ID;
-
-  if (user.id !== broadcasterId) {
+  if (user.id !== String(process.env.TWITCH_BROADCASTER_ID)) {
     return res.status(403).json({
       error: "Acceso denegado. Solo el administrador puede realizar esta acción.",
       role: user.role,
@@ -62,70 +34,89 @@ function requireAdmin(req, res, next) {
 }
 
 async function requireAdminToken(req, res, next) {
-  if (!req.session?.user) {
-    return res.status(401).json({ error: "No autenticado." });
+  const user = getRequestUser(req);
+  if (!user) return unauthorizedResponse(req, res);
+
+  if (user.id !== String(process.env.TWITCH_BROADCASTER_ID)) {
+    return res.status(403).json({
+      error: "Acceso denegado. Solo el administrador puede realizar esta acción.",
+      role: user.role,
+    });
   }
 
   try {
     const tokenManager = require("../services/tokenManager");
-    const hasToken = await tokenManager.hasValidBroadcasterToken();
-    
-    if (hasToken) {
-      console.log("[Roles] AdminToken OK ✓", req.session.user.display_name, "(role:", req.session.user.role, ")");
-      // NO tocar user.role → Mantiene "moderator" visual
-      req.canAdmin = true;  // ← Flag para frontend
-      return next();
+    const broadcasterToken = await tokenManager.getBroadcasterToken();
+    if (!broadcasterToken) {
+      return res.status(503).json({
+        error: "El token del broadcaster no está disponible. Vuelve a autorizar Twitch.",
+      });
     }
-  } catch (err) {
-    console.error("[Roles] Token check fail:", err.message);
+    req.broadcasterToken = broadcasterToken;
+    next();
+  } catch (error) {
+    console.error("[Roles] No se pudo obtener el token del broadcaster:", error.message);
+    return res.status(503).json({
+      error: "El token del broadcaster no está disponible. Vuelve a autorizar Twitch.",
+    });
   }
-
-  return res.status(403).json({
-    error: "Requiere token admin.",
-    role: req.session.user.role || "viewer",
-  });
 }
 
-/**
- * Middleware: el usuario debe ser moderador O administrador
- */
-async function requireModerator(req, res, next) {
-  if (!req.session?.user) {
-    return res.status(401).json({ error: "No autenticado." });
-  }
+function requireModerator(req, res, next) {
+  const user = getRequestUser(req);
+  if (!user) return unauthorizedResponse(req, res);
 
-  const user = req.session.user;
-  const broadcasterId = process.env.TWITCH_BROADCASTER_ID;
-
-  // ✅ Admin siempre pasa
-  if (user.id === broadcasterId) {
-    req.session.user.role = "admin";
-    return next();
-  }
-
-  // ✅ SI YA TIENE ROL DEL LOGIN → PASA DIRECTO (no cache)
-  if (user.role === "moderator") {
-    return next();
-  }
-
-  // Solo verifica cache si NO tiene rol
-  try {
-    await refreshModCache(broadcasterId, req.session.user.accessToken);
-    if (modCache.ids.has(user.id)) {
-      req.session.user.role = "moderator";
-      return next();
-    }
-  } catch {}
+  const isAdmin = user.id === String(process.env.TWITCH_BROADCASTER_ID);
+  if (isAdmin || user.role === "moderator") return next();
 
   return res.status(403).json({
-    error: "Acceso denegado.",
+    error: "Acceso denegado. Se requiere rol de moderador.",
     role: user.role || "viewer",
   });
 }
 
-/**
- * Fuerza el refresh del cache de mods (útil tras añadir un mod)
- */
+function requirePermission(permission, { broadcasterToken = false } = {}) {
+  return async function permissionMiddleware(req, res, next) {
+    const user = getRequestUser(req);
+    if (!user) return unauthorizedResponse(req, res);
+
+    const isAdmin = user.id === String(process.env.TWITCH_BROADCASTER_ID);
+    if (!isAdmin && user.role !== "moderator") {
+      return res.status(403).json({ error: "Acceso denegado. Se requiere rol de moderador." });
+    }
+
+    if (!isAdmin) {
+      try {
+        const { getPermissions } = require("../services/modPermissions");
+        const permissions = await getPermissions(user.id);
+        if (!permissions[permission]) {
+          return res.status(403).json({
+            error: `No tienes habilitado el permiso '${permission}'.`,
+            permission,
+          });
+        }
+      } catch (error) {
+        console.error("[Roles] Error consultando permisos:", error.message);
+        return res.status(503).json({ error: "No se pudieron validar los permisos." });
+      }
+    }
+
+    if (broadcasterToken) {
+      try {
+        const tokenManager = require("../services/tokenManager");
+        req.broadcasterToken = await tokenManager.getBroadcasterToken();
+        if (!req.broadcasterToken) {
+          return res.status(503).json({ error: "Token del broadcaster no disponible." });
+        }
+      } catch (error) {
+        return res.status(503).json({ error: "Token del broadcaster no disponible." });
+      }
+    }
+
+    next();
+  };
+}
+
 function invalidateModCache() {
   modCache.lastFetch = 0;
 }
@@ -134,6 +125,7 @@ module.exports = {
   requireAuth,
   requireAdmin,
   requireModerator,
+  requirePermission,
   invalidateModCache,
   requireAdminToken,
   getModCache: () => modCache,

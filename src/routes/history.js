@@ -3,14 +3,14 @@
 
 const express = require("express");
 const router = express.Router();
-const { requireModerator, requireAdmin } = require("../middleware/roles");
+const { requirePermission } = require("../middleware/roles");
 const db = require("../services/db");
 
 /**
  * GET /history/channel
  * Historial de cambios de título y categoría
  */
-router.get("/channel", requireModerator, async (req, res) => {
+router.get("/channel", requirePermission("chan-history"), async (req, res) => {
   try {
     const { limit = 30 } = req.query;
     const history = await db.getChannelHistory({ limit: parseInt(limit) });
@@ -24,13 +24,14 @@ router.get("/channel", requireModerator, async (req, res) => {
  * GET /history/moderation
  * Historial de moderación persistido (no solo en vivo)
  */
-router.get("/moderation", requireModerator, async (req, res) => {
+router.get("/moderation", requirePermission("moderation"), async (req, res) => {
   try {
     const { limit = 50, offset = 0, type } = req.query;
+    const safeType = typeof type === "string" && ["ban", "timeout"].includes(type) ? type : undefined;
 
     const [followers, bans] = await Promise.all([
       db.getFollowers({ limit: parseInt(limit), offset: parseInt(offset) }),
-      db.getBans({ limit: parseInt(limit), offset: parseInt(offset), type }),
+      db.getBans({ limit: parseInt(limit), offset: parseInt(offset), type: safeType }),
     ]);
 
     const stats = await db.getStats();
@@ -51,7 +52,7 @@ router.get("/moderation", requireModerator, async (req, res) => {
       total: all.length,
       followers_count: followers.length,
       bans_count: bans.length,
-      events: all.slice(0, parseInt(limit)),
+      events: all.slice(0, Math.min(Math.max(Number.parseInt(limit, 10) || 50, 1), 500)),
     });
   } catch (err) {
     res.status(500).json({ error: "Error al obtener historial de moderación" });
@@ -62,7 +63,7 @@ router.get("/moderation", requireModerator, async (req, res) => {
  * GET /history/stats
  * Estadísticas acumuladas
  */
-router.get("/stats", requireModerator, async (req, res) => {
+router.get("/stats", requirePermission("stats"), async (req, res) => {
   try {
     const stats = await db.getStats();
     res.json({ success: true, stats });
@@ -75,7 +76,7 @@ router.get("/stats", requireModerator, async (req, res) => {
  * GET /history/notifications
  * Notificaciones del sistema
  */
-router.get("/notifications", requireModerator, async (req, res) => {
+router.get("/notifications", requirePermission("moderation"), async (req, res) => {
   try {
     const { unread } = req.query;
     const notifications = await db.getNotifications({ unreadOnly: unread === "true" });
@@ -90,7 +91,7 @@ router.get("/notifications", requireModerator, async (req, res) => {
  * POST /history/notifications/read
  * Marcar todas como leídas
  */
-router.post("/notifications/read", requireModerator, async (req, res) => {
+router.post("/notifications/read", requirePermission("moderation"), async (req, res) => {
   try {
     await db.markNotificationsRead();
     res.json({ success: true });

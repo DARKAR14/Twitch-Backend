@@ -1,7 +1,7 @@
 // src/routes/birthdays.js
 const express = require("express");
 const router = express.Router();
-const { requireModerator } = require("../middleware/roles");
+const { requirePermission } = require("../middleware/roles");
 const { MongoClient } = require("mongodb");
 
 let birthdayCol = null;
@@ -24,7 +24,7 @@ const MONTHS = [
  * GET /birthdays
  * Devuelve todos los cumpleaños agrupados por mes
  */
-router.get("/", requireModerator, async (req, res) => {
+router.get("/", requirePermission("birthdays"), async (req, res) => {
   try {
     const col = await getCol();
     const all = await col.find({}).sort({ month: 1, day: 1 }).toArray();
@@ -79,7 +79,7 @@ router.get("/", requireModerator, async (req, res) => {
  * GET /birthdays/today
  * Cumpleaños de hoy
  */
-router.get("/today", requireModerator, async (req, res) => {
+router.get("/today", requirePermission("birthdays"), async (req, res) => {
   try {
     const col = await getCol();
     const now = new Date();

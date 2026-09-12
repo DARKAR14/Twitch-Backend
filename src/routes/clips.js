@@ -1,7 +1,7 @@
 // src/routes/clips.js — usa App Token, no necesita broadcaster logueado
 const express = require("express");
 const router = express.Router();
-const { requireModerator } = require("../middleware/roles");
+const { requirePermission } = require("../middleware/roles");
 const twitchApi = require("../services/twitchApi");
 const tokenManager = require("../services/tokenManager");
 
@@ -26,7 +26,7 @@ function getStreamRange(video) {
   return { startedAt: start.toISOString(), endedAt: end.toISOString(), title: video.title, duration: video.duration, videoId: video.id };
 }
 
-router.get("/today", requireModerator, async (req, res) => {
+router.get("/today", requirePermission("clips"), async (req, res) => {
   try {
     const token = await tokenManager.getAppToken("clips");
     const broadcasterId = process.env.TWITCH_BROADCASTER_ID;
@@ -37,7 +37,7 @@ router.get("/today", requireModerator, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.get("/streams", requireModerator, async (req, res) => {
+router.get("/streams", requirePermission("clips"), async (req, res) => {
   try {
     const token = await tokenManager.getAppToken("videos");
     const broadcasterId = process.env.TWITCH_BROADCASTER_ID;
@@ -47,7 +47,7 @@ router.get("/streams", requireModerator, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.get("/by-stream/:videoId", requireModerator, async (req, res) => {
+router.get("/by-stream/:videoId", requirePermission("clips"), async (req, res) => {
   try {
     const token = await tokenManager.getAppToken("clips");
     const broadcasterId = process.env.TWITCH_BROADCASTER_ID;
@@ -62,7 +62,7 @@ router.get("/by-stream/:videoId", requireModerator, async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-router.get("/all", requireModerator, async (req, res) => {
+router.get("/all", requirePermission("clips"), async (req, res) => {
   try {
     const token = await tokenManager.getAppToken("clips");
     const broadcasterId = process.env.TWITCH_BROADCASTER_ID;
@@ -76,7 +76,7 @@ router.get("/all", requireModerator, async (req, res) => {
 });
 
 // clips.js - AGREGAR al final:
-router.get("/download/:clipId", requireModerator, async (req, res) => {
+router.get("/download/:clipId", requirePermission("clips"), async (req, res) => {
   try {
     const { clipId } = req.params;
     const token = await tokenManager.getAppToken();

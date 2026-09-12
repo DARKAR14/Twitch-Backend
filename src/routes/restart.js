@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
 
-const { requireModerator } = require("../middleware/roles");
+const { requireAdmin } = require("../middleware/roles");
 
 // Cooldown anti spam (5 minutos)
 let lastRestart = 0;
@@ -24,7 +24,7 @@ async function callRender(path, method = "POST") {
 }
 
 // ── REINICIAR ──────────────────────────────────────────────────────────────────
-router.post("/restart", async (req, res) => {
+router.post("/restart", requireAdmin, async (req, res) => {
   try {
     const now = Date.now();
 
@@ -39,7 +39,7 @@ router.post("/restart", async (req, res) => {
     const { ok, text } = await callRender("/restart");
 
     if (!ok) {
-      return res.status(500).json({ success: false, error: "Render rechazó el reinicio", details: text });
+      return res.status(502).json({ success: false, error: "Render rechazó el reinicio" });
     }
 
     lastRestart = now;
@@ -47,11 +47,11 @@ router.post("/restart", async (req, res) => {
 
   } catch (error) {
     console.error("Error reiniciando:", error);
-    res.status(500).json({ success: false, error: error.message });
+    res.status(502).json({ success: false, error: "No se pudo contactar a Render" });
   }
 });
 
-router.post("/", async (req, res) => {
+router.post("/", requireAdmin, async (req, res) => {
 
   try {
 
@@ -85,10 +85,9 @@ router.post("/", async (req, res) => {
     console.log(text);
 
     if (!response.ok) {
-      return res.status(500).json({
+      return res.status(502).json({
         success: false,
-        error: "Render rechazó el reinicio",
-        details: text
+        error: "Render rechazó el reinicio"
       });
     }
 
@@ -104,9 +103,9 @@ router.post("/", async (req, res) => {
     console.error("Error reiniciando bot:");
     console.error(error);
 
-    res.status(500).json({
+    res.status(502).json({
       success: false,
-      error: error.message
+      error: "No se pudo contactar a Render"
     });
 
   }
@@ -114,7 +113,7 @@ router.post("/", async (req, res) => {
 });
 
 // ── APAGAR (suspender) ─────────────────────────────────────────────────────────
-router.post("/stop", async (req, res) => {
+router.post("/stop", requireAdmin, async (req, res) => {
   try {
     const now = Date.now();
 
@@ -129,7 +128,7 @@ router.post("/stop", async (req, res) => {
     const { ok, text } = await callRender("/suspend");
 
     if (!ok) {
-      return res.status(500).json({ success: false, error: "Render rechazó la suspensión", details: text });
+      return res.status(502).json({ success: false, error: "Render rechazó la suspensión" });
     }
 
     lastToggle = now;
@@ -137,12 +136,12 @@ router.post("/stop", async (req, res) => {
 
   } catch (error) {
     console.error("Error suspendiendo:", error);
-    res.status(500).json({ success: false, error: error.message });
+    res.status(502).json({ success: false, error: "No se pudo contactar a Render" });
   }
 });
 
 // ── ENCENDER (resumir) ─────────────────────────────────────────────────────────
-router.post("/start", async (req, res) => {
+router.post("/start", requireAdmin, async (req, res) => {
   try {
     const now = Date.now();
 
@@ -157,7 +156,7 @@ router.post("/start", async (req, res) => {
     const { ok, text } = await callRender("/resume");
 
     if (!ok) {
-      return res.status(500).json({ success: false, error: "Render rechazó el inicio", details: text });
+      return res.status(502).json({ success: false, error: "Render rechazó el inicio" });
     }
 
     lastToggle = now;
@@ -165,7 +164,7 @@ router.post("/start", async (req, res) => {
 
   } catch (error) {
     console.error("Error iniciando:", error);
-    res.status(500).json({ success: false, error: error.message });
+    res.status(502).json({ success: false, error: "No se pudo contactar a Render" });
   }
 });
 

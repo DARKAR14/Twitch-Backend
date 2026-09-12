@@ -58,22 +58,32 @@ router.get("/info", requireModerator, async (req, res) => {
  */
 router.patch("/update", requireModerator, async (req, res) => {
   const { title, game_id } = req.body;
-  if (!title && !game_id) {
+  if (title === undefined && game_id === undefined) {
     return res.status(400).json({ error: "Se requiere al menos 'title' o 'game_id'" });
+  }
+  if (title !== undefined && (typeof title !== "string" || !title.trim() || title.length > 140)) {
+    return res.status(400).json({ error: "title debe contener entre 1 y 140 caracteres" });
+  }
+  if (game_id !== undefined && !/^\d+$/.test(String(game_id))) {
+    return res.status(400).json({ error: "game_id debe ser un identificador numérico de Twitch" });
   }
 
   try {
     const broadcasterId = process.env.TWITCH_BROADCASTER_ID;
-    const { display_name, role } = req.session.user;
+    const { display_name, role } = req.authUser;
 
     // ✅ FIX 1: Broadcaster token (no App Token)
-    const broadcasterToken = await tokenManager.getBroadcasterToken();
-
-    // ✅ FIX 2: user_id parameter
-    const updated = await twitchApi.updateChannelInfo(broadcasterId, broadcasterToken, {
-      title,
-      game_id,   // ← cambiar "gameId" por "game_id"
-    }, broadcasterId);
+    const updated = await tokenManager.withBroadcasterToken((broadcasterToken) =>
+      twitchApi.updateChannelInfo(
+        broadcasterId,
+        broadcasterToken,
+        {
+          ...(title !== undefined ? { title: title.trim() } : {}),
+          ...(game_id !== undefined ? { game_id: String(game_id) } : {}),
+        },
+        broadcasterId
+      )
+    );
 
     if (updated === false || !updated) {  // false = fallo
       return res.status(502).json({ error: "Twitch no confirmó el cambio" });
@@ -125,12 +135,12 @@ router.patch("/update", requireModerator, async (req, res) => {
  */
 router.get("/search-categories", requireModerator, async (req, res) => {
   const { q } = req.query;
-  if (!q || q.length < 2) {
-    return res.status(400).json({ error: "Se requiere query de al menos 2 caracteres" });
+  if (typeof q !== "string" || q.trim().length < 2 || q.length > 100) {
+    return res.status(400).json({ error: "Se requiere query de 2 a 100 caracteres" });
   }
   try {
     const appToken = await tokenManager.getAppToken("search_categories");
-    const categories = await twitchApi.searchCategories(q, appToken);
+    const categories = await twitchApi.searchCategories(q.trim(), appToken);
     res.json({ success: true, categories });
   } catch (err) {
     res.status(500).json({ error: "Error al buscar categorías" });

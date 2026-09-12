@@ -2,12 +2,20 @@
 const twitchApi = require("../services/twitchApi");
 const db = require("../services/db");
 const tokenManager = require('../services/tokenManager');  // ← AGREGADO
+const { verifyApiToken } = require("../services/apiAuth");
 
 function initSocket(io, sessionMiddleware) {
   io.engine.use(sessionMiddleware);
 
   io.on("connection", async (socket) => {
-    const user = socket.request.session?.user;
+    let user = socket.request.session?.user;
+    if (!user && socket.handshake.auth?.token) {
+      try {
+        user = verifyApiToken(socket.handshake.auth.token);
+      } catch {
+        user = null;
+      }
+    }
     if (!user) { 
       socket.emit("error", { message: "No autenticado" }); 
       socket.disconnect(); 
@@ -17,24 +25,25 @@ function initSocket(io, sessionMiddleware) {
     console.log(`[Socket] ✓ ${user.display_name} (${user.role})`);
     
     // ← NUEVO: Chequea token MongoDB para canAdmin
-    const hasAdminToken = await tokenManager.hasValidBroadcasterToken();
-    if (hasAdminToken) {
+    const isAdmin = String(user.id) === String(process.env.TWITCH_BROADCASTER_ID);
+    const hasAdminToken = isAdmin && await tokenManager.hasValidBroadcasterToken();
+    if (isAdmin) {
       socket.emit("user_role", { 
-        role: user.role,        // "moderator" (visual)
-        canAdmin: true          // Admin powers
+        role: "admin",
+        canAdmin: hasAdminToken,
       });
-      console.log(`[Socket] AdminToken ✓ ${user.display_name}`);
     }
 
     socket.join("all");
-    if (user.role === "admin") socket.join("admin");
-    if (user.role === "moderator" || user.role === "admin") socket.join("moderators");
+    socket.join(`mod:${user.id}`);
+    if (isAdmin) socket.join("admin");
+    if (user.role === "moderator" || isAdmin) socket.join("moderators");
 
     socket.emit("connected", { 
       user: { id: user.id, display_name: user.display_name, role: user.role } 
     });
 
-    if (user.role === "moderator" || user.role === "admin") {
+    if (user.role === "moderator" || isAdmin) {
       try {
         const [followers, bans, notifs] = await Promise.all([
           db.getFollowers({ limit: 30 }), 
@@ -76,7 +85,7 @@ function initSocket(io, sessionMiddleware) {
     });
 
     socket.on("moderation:refresh", async () => {
-      if (user.role !== "admin" && user.role !== "moderator") return;
+      if (!isAdmin && user.role !== "moderator") return;
       try {
         const bId = process.env.TWITCH_BROADCASTER_ID;
         const bToken = await tokenManager.getBroadcasterToken();

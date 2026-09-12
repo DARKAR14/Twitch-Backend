@@ -2,7 +2,7 @@
 const express = require("express");
 const router = express.Router();
 const axios = require("axios");
-const { requireAdmin, requireAdminToken } = require("../middleware/roles");
+const { requireAdminToken } = require("../middleware/roles");
 const tokenManager = require("../services/tokenManager");
 const twitchApi = require("../services/twitchApi");
 const db = require("../services/db");
@@ -73,25 +73,28 @@ router.get("/list", requireAdminToken, async (req, res) => {
 
 // POST /modmanager/add — Body: { user_login }
 router.post("/add", requireAdminToken, async (req, res) => {
-  const { user_login } = req.body;
-  if (!user_login) return res.status(400).json({ error: "Se requiere user_login" });
+  const user_login = String(req.body.user_login || "").trim().replace(/^@/, "").toLowerCase();
+  if (!/^[a-z0-9_]{1,25}$/.test(user_login)) {
+    return res.status(400).json({ error: "user_login de Twitch inválido" });
+  }
 
   try {
     const broadcasterId = process.env.TWITCH_BROADCASTER_ID;
-    const token = await tokenManager.getBroadcasterToken();
-    if (!token) return res.status(503).json({ error: "Token del broadcaster no disponible" });
-
-    const userRes = await axios.get(`${TWITCH_API}/users`, {
-      headers: buildHeaders(token),
-      params: { login: user_login },
-    });
+    const userRes = await tokenManager.withBroadcasterToken((token) =>
+      axios.get(`${TWITCH_API}/users`, {
+        headers: buildHeaders(token),
+        params: { login: user_login },
+      })
+    );
     const target = userRes.data.data[0];
     if (!target) return res.status(404).json({ error: `@${user_login} no encontrado` });
 
-    await axios.post(`${TWITCH_API}/moderation/moderators`, null, {
-      headers: buildHeaders(token),
-      params: { broadcaster_id: broadcasterId, user_id: target.id },
-    });
+    await tokenManager.withBroadcasterToken((token) =>
+      axios.post(`${TWITCH_API}/moderation/moderators`, null, {
+        headers: buildHeaders(token),
+        params: { broadcaster_id: broadcasterId, user_id: target.id },
+      })
+    );
 
     const io = req.app.get("io");
     if (io) {
@@ -116,15 +119,17 @@ router.post("/add", requireAdminToken, async (req, res) => {
 
 // DELETE /modmanager/remove/:userId
 router.delete("/remove/:userId", requireAdminToken, async (req, res) => {
+  if (!/^\d+$/.test(req.params.userId)) {
+    return res.status(400).json({ error: "userId inválido" });
+  }
   try {
     const broadcasterId = process.env.TWITCH_BROADCASTER_ID;
-    const token = await tokenManager.getBroadcasterToken();
-    if (!token) return res.status(503).json({ error: "Token del broadcaster no disponible" });
-
-    await axios.delete(`${TWITCH_API}/moderation/moderators`, {
-      headers: buildHeaders(token),
-      params: { broadcaster_id: broadcasterId, user_id: req.params.userId },
-    });
+    await tokenManager.withBroadcasterToken((token) =>
+      axios.delete(`${TWITCH_API}/moderation/moderators`, {
+        headers: buildHeaders(token),
+        params: { broadcaster_id: broadcasterId, user_id: req.params.userId },
+      })
+    );
 
     const io = req.app.get("io");
     if (io) io.to("admin").emit("modmanager:mod_removed", { user_id: req.params.userId });

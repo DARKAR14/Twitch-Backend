@@ -4,7 +4,7 @@
 
 const express = require("express");
 const router = express.Router();
-const { requireModerator } = require("../middleware/roles");
+const { requirePermission } = require("../middleware/roles");
 const twitchApi = require("../services/twitchApi");
 const tokenManager = require("../services/tokenManager");
 
@@ -12,7 +12,7 @@ const tokenManager = require("../services/tokenManager");
  * GET /moderation/activity
  * Log combinado: nuevos followers + usuarios baneados
  */
-router.get("/activity", requireModerator, async (req, res) => {
+router.get("/activity", requirePermission("moderation"), async (req, res) => {
   try {
     const broadcasterId = process.env.TWITCH_BROADCASTER_ID;
     const { first = 20 } = req.query;
@@ -87,7 +87,7 @@ router.get("/activity", requireModerator, async (req, res) => {
 /**
  * GET /moderation/followers
  */
-router.get("/followers", requireModerator, async (req, res) => {
+router.get("/followers", requirePermission("moderation"), async (req, res) => {
   try {
     const broadcasterId = process.env.TWITCH_BROADCASTER_ID;
     const { first = 20 } = req.query;
@@ -111,7 +111,7 @@ router.get("/followers", requireModerator, async (req, res) => {
 /**
  * GET /moderation/banned
  */
-router.get("/banned", requireModerator, async (req, res) => {
+router.get("/banned", requirePermission("moderation"), async (req, res) => {
   try {
     const broadcasterId = process.env.TWITCH_BROADCASTER_ID;
     const { first = 20 } = req.query;
@@ -143,7 +143,7 @@ router.get("/banned", requireModerator, async (req, res) => {
 /**
  * GET /moderation/moderators
  */
-router.get("/moderators", requireModerator, async (req, res) => {
+router.get("/moderators", requirePermission("moderation"), async (req, res) => {
   try {
     const broadcasterId = process.env.TWITCH_BROADCASTER_ID;
     const token = await tokenManager.getTokenFor("moderators");

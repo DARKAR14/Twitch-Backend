@@ -2,13 +2,23 @@
 const express = require("express");
 const router = express.Router();
 const axios = require("axios");
-const { requireAdmin, requireModerator, requireAdminToken } = require("../middleware/roles");
+const crypto = require("crypto");
+const { requireAdmin, requirePermission } = require("../middleware/roles");
+const { activeKeyId, activeKeySource, decryptSecret, encryptSecret } = require("../services/secretCipher");
+const {
+  getDefaultFrontendReturnTo,
+  getSafeFrontendReturnTo,
+  withQueryParams,
+} = require("../services/frontendUrls");
+
+const requireSpotifyPermission = requirePermission("spotify");
 
 const SPOTIFY_AUTH = "https://accounts.spotify.com";
 const SPOTIFY_API = "https://api.spotify.com/v1";
 
 // ── Colección MongoDB ──────────────────────────────────────────────────────────
 let spotifyCol = null;
+let spotifyRefreshPromise = null;
 async function getCol() {
   if (spotifyCol) return spotifyCol;
   const { MongoClient } = require("mongodb");
@@ -23,20 +33,51 @@ function buildHeaders(token) {
   return { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
 }
 
+function safeEqual(left, right) {
+  if (!left || !right) return false;
+  const leftBuffer = Buffer.from(String(left));
+  const rightBuffer = Buffer.from(String(right));
+  return leftBuffer.length === rightBuffer.length && crypto.timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+function requireModeratorOrInternal(req, res, next) {
+  const expectedSecret = process.env.INTERNAL_API_SECRET || process.env.EVENTSUB_SECRET;
+  if (safeEqual(req.get("x-internal-secret"), expectedSecret)) return next();
+  return requireSpotifyPermission(req, res, next);
+}
+
 async function getSpotifyTokens() {
   const col = await getCol();
-  return col.findOne({ _id: "tokens" });
+  const document = await col.findOne({ _id: "tokens" });
+  if (!document) return null;
+
+  const tokens = {
+    access_token: decryptSecret(document.access_token_encrypted, document.access_token),
+    refresh_token: decryptSecret(document.refresh_token_encrypted, document.refresh_token),
+    expires_at: document.expires_at,
+  };
+  const requiresMigration = document.access_token
+    || document.refresh_token
+    || document.encryption_key_id !== activeKeyId();
+  if (requiresMigration) {
+    const secondsRemaining = Math.max(1, Math.floor((new Date(document.expires_at).getTime() - Date.now()) / 1000));
+    await saveSpotifyTokens(tokens.access_token, tokens.refresh_token, secondsRemaining);
+  }
+  return tokens;
 }
 
 async function saveSpotifyTokens(accessToken, refreshToken, expiresIn = 3600) {
+  if (!accessToken || !refreshToken) throw new Error("Tokens de Spotify incompletos");
   const col = await getCol();
   await col.replaceOne(
     { _id: "tokens" },
     {
       _id: "tokens",
-      access_token: accessToken,
-      refresh_token: refreshToken,
-      expires_at: new Date(Date.now() + (expiresIn - 60) * 1000),
+      access_token_encrypted: encryptSecret(accessToken),
+      refresh_token_encrypted: encryptSecret(refreshToken),
+      encryption_key_source: activeKeySource(),
+      encryption_key_id: activeKeyId(),
+      expires_at: new Date(Date.now() + Number(expiresIn || 3600) * 1000),
       updated_at: new Date(),
     },
     { upsert: true }
@@ -48,31 +89,38 @@ async function getValidAccessToken() {
   if (!tokens) throw new Error("Spotify no vinculado. El admin debe conectar su cuenta.");
 
   // Token vigente
-  if (new Date(tokens.expires_at) > new Date()) return tokens.access_token;
+  if (new Date(tokens.expires_at).getTime() - Date.now() > 60 * 1000) return tokens.access_token;
 
-  // Refrescar
-  const res = await axios.post(
-    `${SPOTIFY_AUTH}/api/token`,
-    new URLSearchParams({
-      grant_type: "refresh_token",
-      refresh_token: tokens.refresh_token,
-    }),
-    {
-      headers: {
-        Authorization: `Basic ${Buffer.from(
-          `${process.env.SPOTIFY_CLIENT_ID}:${process.env.SPOTIFY_CLIENT_SECRET}`
-        ).toString("base64")}`,
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-    }
-  );
+  if (!spotifyRefreshPromise) {
+    spotifyRefreshPromise = (async () => {
+      const res = await axios.post(
+        `${SPOTIFY_AUTH}/api/token`,
+        new URLSearchParams({
+          grant_type: "refresh_token",
+          refresh_token: tokens.refresh_token,
+        }),
+        {
+          headers: {
+            Authorization: `Basic ${Buffer.from(
+              `${process.env.SPOTIFY_CLIENT_ID}:${process.env.SPOTIFY_CLIENT_SECRET}`
+            ).toString("base64")}`,
+            "Content-Type": "application/x-www-form-urlencoded",
+          },
+          timeout: 10000,
+        }
+      );
 
-  await saveSpotifyTokens(
-    res.data.access_token,
-    res.data.refresh_token || tokens.refresh_token,
-    res.data.expires_in
-  );
-  return res.data.access_token;
+      await saveSpotifyTokens(
+        res.data.access_token,
+        res.data.refresh_token || tokens.refresh_token,
+        res.data.expires_in
+      );
+      return res.data.access_token;
+    })().finally(() => {
+      spotifyRefreshPromise = null;
+    });
+  }
+  return spotifyRefreshPromise;
 }
 
 // Extrae el track ID de una URL de Spotify
@@ -88,6 +136,9 @@ function extractTrackId(url) {
  * Redirige al admin a la pantalla de login de Spotify
  */
 router.get("/auth", requireAdmin, (req, res) => {
+  const returnTo = getSafeFrontendReturnTo(req.query.return_to);
+  if (!returnTo) return res.status(400).json({ error: "return_to no pertenece a un frontend permitido" });
+
   const scopes = [
     "user-read-playback-state",
     "user-modify-playback-state",
@@ -96,12 +147,15 @@ router.get("/auth", requireAdmin, (req, res) => {
     "playlist-modify-private",
   ].join(" ");
 
+  const state = crypto.randomBytes(32).toString("hex");
+  req.session.spotifyOAuthState = { value: state, createdAt: Date.now(), returnTo };
+
   const params = new URLSearchParams({
     client_id: process.env.SPOTIFY_CLIENT_ID,
     response_type: "code",
     redirect_uri: process.env.SPOTIFY_CALLBACK_URL,
     scope: scopes,
-    state: "darkops",
+    state,
   });
 
   res.redirect(`${SPOTIFY_AUTH}/authorize?${params}`);
@@ -112,8 +166,20 @@ router.get("/auth", requireAdmin, (req, res) => {
  * Spotify redirige aquí tras el login
  */
 router.get("/callback", async (req, res) => {
-  const { code, error } = req.query;
-  if (error) return res.redirect(`${process.env.FRONTEND_URL}/dashboard?spotify=error`);
+  const { code, error, state } = req.query;
+  const storedState = req.session?.spotifyOAuthState;
+  const returnTo = getSafeFrontendReturnTo(storedState?.returnTo) || getDefaultFrontendReturnTo();
+  if (req.session) delete req.session.spotifyOAuthState;
+
+  const validState = storedState
+    && Date.now() - storedState.createdAt <= 10 * 60 * 1000
+    && safeEqual(state, storedState.value);
+  const isAdmin = req.session?.user?.id === String(process.env.TWITCH_BROADCASTER_ID);
+  if (!validState || !isAdmin) {
+    return res.redirect(withQueryParams(returnTo, { spotify: "invalid_state" }));
+  }
+  if (error) return res.redirect(withQueryParams(returnTo, { spotify: "error" }));
+  if (!code) return res.redirect(withQueryParams(returnTo, { spotify: "error" }));
 
   try {
     const res2 = await axios.post(
@@ -138,10 +204,10 @@ router.get("/callback", async (req, res) => {
     // Crear la recompensa de Channel Points automáticamente
     await createChannelPointReward(req.app.get("io"));
 
-    res.redirect(`${process.env.FRONTEND_URL}/dashboard?spotify=connected&page=spotify`);
+    res.redirect(withQueryParams(returnTo, { spotify: "connected", page: "spotify" }));
   } catch (err) {
     console.error("[Spotify Callback]", err.response?.data || err.message);
-    res.redirect(`${process.env.FRONTEND_URL}/dashboard?spotify=error`);
+    res.redirect(withQueryParams(returnTo, { spotify: "error" }));
   }
 });
 
@@ -186,7 +252,7 @@ router.get("/overlay", async (req, res) => {
  * GET /spotify/status
  * Estado de la conexión + canción actual
  */
-router.get("/status", requireModerator, async (req, res) => {
+router.get("/status", requireSpotifyPermission, async (req, res) => {
   try {
     const tokens = await getSpotifyTokens();
     if (!tokens) return res.json({ connected: false });
@@ -217,7 +283,7 @@ router.get("/status", requireModerator, async (req, res) => {
  * GET /spotify/queue
  * Cola actual de reproducción
  */
-router.get("/queue", requireModerator, async (req, res) => {
+router.get("/queue", requireSpotifyPermission, async (req, res) => {
   try {
     const token = await getValidAccessToken();
     const response = await axios.get(`${SPOTIFY_API}/me/player/queue`, {
@@ -242,8 +308,9 @@ router.get("/queue", requireModerator, async (req, res) => {
  * Body: { url, requested_by }
  * Llamado por: EventSub cuando un viewer canjea Channel Points
  */
-router.post("/add", async (req, res) => {
-  const { url, requested_by = "Anónimo" } = req.body;
+router.post("/add", requireModeratorOrInternal, async (req, res) => {
+  const url = typeof req.body.url === "string" ? req.body.url.trim() : "";
+  const requested_by = String(req.body.requested_by || "Anónimo").trim().slice(0, 50);
   if (!url) return res.status(400).json({ error: "Se requiere url de Spotify" });
 
   const trackId = extractTrackId(url);
@@ -309,7 +376,7 @@ router.post("/add", async (req, res) => {
  * GET /spotify/requests
  * Historial de canciones solicitadas por viewers
  */
-router.get("/requests", requireModerator, async (req, res) => {
+router.get("/requests", requireSpotifyPermission, async (req, res) => {
   try {
     const col = await getCol();
     const requests = await col
@@ -334,7 +401,7 @@ router.get("/requests", requireModerator, async (req, res) => {
  * GET /spotify/reward-info
  * Info de la recompensa de Channel Points creada
  */
-router.get("/reward-info", requireModerator, async (req, res) => {
+router.get("/reward-info", requireSpotifyPermission, async (req, res) => {
   try {
     const col = await getCol();
     const reward = await col.findOne({ _id: "channel_reward" });
@@ -345,7 +412,7 @@ router.get("/reward-info", requireModerator, async (req, res) => {
 });
 
 // AGREGAR ruta nueva
-router.get("/history", requireModerator, async (req, res) => {
+router.get("/history", requireSpotifyPermission, async (req, res) => {
   try {
     const col = await getCol();
     const history = await col
@@ -367,13 +434,7 @@ router.get("/history", requireModerator, async (req, res) => {
  * POST /spotify/resubscribe-eventsub
  * Re-registra solo el EventSub de channel points sin recrear la recompensa
  */
-router.post("/resubscribe-eventsub", async (req, res) => {
-  // Verificar con una clave secreta simple para no exponer el endpoint
-  const { secret } = req.body;
-  if (secret !== process.env.EVENTSUB_SECRET) {
-    return res.status(403).json({ error: "No autorizado" });
-  }
-
+router.post("/resubscribe-eventsub", requireAdmin, async (req, res) => {
   try {
     const col = await getCol();
     const reward = await col.findOne({ _id: "channel_reward" });
@@ -462,17 +523,19 @@ async function createChannelPointReward(io) {
     let reward = null;
 
     try {
-      const res = await axios.post(
-        "https://api.twitch.tv/helix/channel_points/custom_rewards",
-        rewardData,
-        {
-          headers: {
-            Authorization: `Bearer ${broadcasterToken}`,
-            "Client-Id": process.env.TWITCH_CLIENT_ID,
-            "Content-Type": "application/json",
-          },
-          params: { broadcaster_id: broadcasterId },
-        }
+      const res = await tokenManager.withBroadcasterToken((activeToken) =>
+        axios.post(
+          "https://api.twitch.tv/helix/channel_points/custom_rewards",
+          rewardData,
+          {
+            headers: {
+              Authorization: `Bearer ${activeToken}`,
+              "Client-Id": process.env.TWITCH_CLIENT_ID,
+              "Content-Type": "application/json",
+            },
+            params: { broadcaster_id: broadcasterId },
+          }
+        )
       );
       reward = res.data.data[0];
       console.log("[Spotify] Recompensa creada:", reward.title, "→", reward.id);
@@ -480,15 +543,17 @@ async function createChannelPointReward(io) {
       if (err.response?.status === 409 || err.response?.data?.message === "CREATE_CUSTOM_REWARD_DUPLICATE_REWARD") {
         // Ya existe — buscarla en Twitch
         console.log("[Spotify] Recompensa ya existe, buscando en Twitch...");
-        const listRes = await axios.get(
-          "https://api.twitch.tv/helix/channel_points/custom_rewards",
-          {
-            headers: {
-              Authorization: `Bearer ${broadcasterToken}`,
-              "Client-Id": process.env.TWITCH_CLIENT_ID,
-            },
-            params: { broadcaster_id: broadcasterId, only_manageable_rewards: true },
-          }
+        const listRes = await tokenManager.withBroadcasterToken((activeToken) =>
+          axios.get(
+            "https://api.twitch.tv/helix/channel_points/custom_rewards",
+            {
+              headers: {
+                Authorization: `Bearer ${activeToken}`,
+                "Client-Id": process.env.TWITCH_CLIENT_ID,
+              },
+              params: { broadcaster_id: broadcasterId, only_manageable_rewards: true },
+            }
+          )
         );
         // Buscar por título
         reward = listRes.data.data.find((r) => r.title === rewardData.title);
@@ -536,6 +601,7 @@ async function subscribeToRewardEventSub(rewardId, broadcasterToken) {
     const tokenManager = require("../services/tokenManager");
     const appToken = await tokenManager.getAppToken();
     const broadcasterId = process.env.TWITCH_BROADCASTER_ID;
+    if (!process.env.EVENTSUB_SECRET) throw new Error("EVENTSUB_SECRET no configurado");
 
     await axios.post(
       "https://api.twitch.tv/helix/eventsub/subscriptions",
@@ -549,7 +615,7 @@ async function subscribeToRewardEventSub(rewardId, broadcasterToken) {
         transport: {
           method: "webhook",
           callback: `${process.env.PUBLIC_URL}/eventsub/callback`,
-          secret: process.env.EVENTSUB_SECRET || "darkops-secret",
+          secret: process.env.EVENTSUB_SECRET,
         },
       },
       {

@@ -1,7 +1,7 @@
 // src/routes/stats.js
 const express = require("express");
 const router = express.Router();
-const { requireModerator } = require("../middleware/roles");
+const { requirePermission } = require("../middleware/roles");
 const tokenManager = require("../services/tokenManager");
 const twitchApi = require("../services/twitchApi");
 const db = require("../services/db");
@@ -10,9 +10,9 @@ const db = require("../services/db");
  * GET /stats/me
  * Stats personales del mod logueado (bans, clips, followers hoy, tiempo activo)
  */
-router.get("/me", requireModerator, async (req, res) => {
+router.get("/me", requirePermission("stats"), async (req, res) => {
   try {
-    const { id: userId, display_name } = req.session.user;
+    const { id: userId, display_name } = req.authUser;
     const broadcasterId = process.env.TWITCH_BROADCASTER_ID;
 
     // Rango de hoy
@@ -85,7 +85,7 @@ router.get("/me", requireModerator, async (req, res) => {
  * GET /stats/mods
  * Comparación de todos los mods (top mods)
  */
-router.get("/mods", requireModerator, async (req, res) => {
+router.get("/mods", requirePermission("stats"), async (req, res) => {
   try {
     const broadcasterId = process.env.TWITCH_BROADCASTER_ID;
     const appToken = await tokenManager.getTokenFor("moderators");
@@ -129,9 +129,9 @@ router.get("/mods", requireModerator, async (req, res) => {
  * POST /stats/session/ping
  * El frontend hace ping cada 5min para registrar tiempo activo
  */
-router.post("/session/ping", requireModerator, async (req, res) => {
+router.post("/session/ping", requirePermission("stats"), async (req, res) => {
   try {
-    const { id: userId } = req.session.user;
+    const { id: userId } = req.authUser;
     await db.updateModSession(userId, 5);
     const session = await db.getModSession(userId);
     res.json({ success: true, total_minutes: session?.total_minutes || 0 });

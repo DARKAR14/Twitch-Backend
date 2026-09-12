@@ -5,7 +5,10 @@
 const express = require("express");
 const router = express.Router();
 const axios = require("axios");
-const { requireAdminToken } = require("../middleware/roles");
+const { requirePermission } = require("../middleware/roles");
+const tokenManager = require("../services/tokenManager");
+
+const requireVipPermission = requirePermission("vip", { broadcasterToken: true });
 
 const TWITCH_API = "https://api.twitch.tv/helix";
 
@@ -17,22 +20,13 @@ function buildHeaders(token) {
   };
 }
 
-async function getBroadcasterToken() {
-  const tokenManager = require("../services/tokenManager");
-  const token = await tokenManager.getBroadcasterToken();
-  if (!token) throw new Error("Token del broadcaster no disponible");
-  return token;
-}
-
 /**
  * GET /vip/list
  * Lista todos los VIPs del canal
  */
-router.get("/list", requireAdminToken, async (req, res) => {
+router.get("/list", requireVipPermission, async (req, res) => {
   try {
     const broadcasterId = process.env.TWITCH_BROADCASTER_ID;
-    const token = await getBroadcasterToken();
-
     const vips = [];
     let cursor = null;
 
@@ -40,10 +34,12 @@ router.get("/list", requireAdminToken, async (req, res) => {
       const params = { broadcaster_id: broadcasterId, first: 100 };
       if (cursor) params.after = cursor;
 
-      const response = await axios.get(`${TWITCH_API}/channels/vips`, {
-        headers: buildHeaders(token),
-        params,
-      });
+      const response = await tokenManager.withBroadcasterToken((token) =>
+        axios.get(`${TWITCH_API}/channels/vips`, {
+          headers: buildHeaders(token),
+          params,
+        })
+      );
 
       vips.push(...response.data.data);
       cursor = response.data.pagination?.cursor || null;
@@ -71,27 +67,31 @@ router.get("/list", requireAdminToken, async (req, res) => {
  * Añade un VIP al canal
  * Body: { user_login }
  */
-router.post("/add", requireAdminToken, async (req, res) => {
-  const { user_login } = req.body;
-  if (!user_login) return res.status(400).json({ error: "Se requiere user_login" });
+router.post("/add", requireVipPermission, async (req, res) => {
+  const user_login = String(req.body.user_login || "").trim().replace(/^@/, "").toLowerCase();
+  if (!/^[a-z0-9_]{1,25}$/.test(user_login)) {
+    return res.status(400).json({ error: "user_login de Twitch inválido" });
+  }
 
   try {
     const broadcasterId = process.env.TWITCH_BROADCASTER_ID;
-    const token = await getBroadcasterToken();
-
     // Obtener user_id del login
-    const userRes = await axios.get(`${TWITCH_API}/users`, {
-      headers: buildHeaders(token),
-      params: { login: user_login.replace("@", "") },
-    });
+    const userRes = await tokenManager.withBroadcasterToken((token) =>
+      axios.get(`${TWITCH_API}/users`, {
+        headers: buildHeaders(token),
+        params: { login: user_login },
+      })
+    );
     const target = userRes.data.data[0];
     if (!target) return res.status(404).json({ error: `@${user_login} no encontrado en Twitch` });
 
     // Añadir VIP
-    await axios.post(`${TWITCH_API}/channels/vips`, null, {
-      headers: buildHeaders(token),
-      params: { broadcaster_id: broadcasterId, user_id: target.id },
-    });
+    await tokenManager.withBroadcasterToken((token) =>
+      axios.post(`${TWITCH_API}/channels/vips`, null, {
+        headers: buildHeaders(token),
+        params: { broadcaster_id: broadcasterId, user_id: target.id },
+      })
+    );
 
     // Notificar via socket
     const io = req.app.get("io");
@@ -100,7 +100,7 @@ router.post("/add", requireAdminToken, async (req, res) => {
         user_id: target.id,
         user_login: target.login,
         user_name: target.display_name,
-        added_by: req.session.user.display_name,
+        added_by: req.authUser.display_name,
         added_at: new Date().toISOString(),
       });
     }
@@ -132,25 +132,28 @@ router.post("/add", requireAdminToken, async (req, res) => {
  * DELETE /vip/remove/:userId
  * Quita el VIP a un usuario
  */
-router.delete("/remove/:userId", requireAdminToken, async (req, res) => {
+router.delete("/remove/:userId", requireVipPermission, async (req, res) => {
+  if (!/^\d+$/.test(req.params.userId)) {
+    return res.status(400).json({ error: "userId inválido" });
+  }
   try {
     const broadcasterId = process.env.TWITCH_BROADCASTER_ID;
-    const token = await getBroadcasterToken();
-
-    await axios.delete(`${TWITCH_API}/channels/vips`, {
-      headers: buildHeaders(token),
-      params: {
-        broadcaster_id: broadcasterId,
-        user_id: req.params.userId,
-      },
-    });
+    await tokenManager.withBroadcasterToken((token) =>
+      axios.delete(`${TWITCH_API}/channels/vips`, {
+        headers: buildHeaders(token),
+        params: {
+          broadcaster_id: broadcasterId,
+          user_id: req.params.userId,
+        },
+      })
+    );
 
     // Notificar via socket
     const io = req.app.get("io");
     if (io) {
       io.to("moderators").emit("vip:removed", {
         user_id: req.params.userId,
-        removed_by: req.session.user.display_name,
+        removed_by: req.authUser.display_name,
       });
     }
 
@@ -167,24 +170,30 @@ router.delete("/remove/:userId", requireAdminToken, async (req, res) => {
  * GET /vip/check/:userLogin
  * Verifica si un usuario es VIP (para preview)
  */
-router.get("/check/:userLogin", requireAdminToken, async (req, res) => {
+router.get("/check/:userLogin", requireVipPermission, async (req, res) => {
+  const userLogin = String(req.params.userLogin || "").trim().replace(/^@/, "").toLowerCase();
+  if (!/^[a-z0-9_]{1,25}$/.test(userLogin)) {
+    return res.status(400).json({ error: "userLogin de Twitch inválido" });
+  }
   try {
     const broadcasterId = process.env.TWITCH_BROADCASTER_ID;
-    const token = await getBroadcasterToken();
-
     // Obtener user_id primero
-    const userRes = await axios.get(`${TWITCH_API}/users`, {
-      headers: buildHeaders(token),
-      params: { login: req.params.userLogin },
-    });
+    const userRes = await tokenManager.withBroadcasterToken((token) =>
+      axios.get(`${TWITCH_API}/users`, {
+        headers: buildHeaders(token),
+        params: { login: userLogin },
+      })
+    );
     const user = userRes.data.data[0];
     if (!user) return res.status(404).json({ error: "Usuario no encontrado" });
 
     // Verificar si es VIP
-    const vipRes = await axios.get(`${TWITCH_API}/channels/vips`, {
-      headers: buildHeaders(token),
-      params: { broadcaster_id: broadcasterId, user_id: user.id, first: 1 },
-    });
+    const vipRes = await tokenManager.withBroadcasterToken((token) =>
+      axios.get(`${TWITCH_API}/channels/vips`, {
+        headers: buildHeaders(token),
+        params: { broadcaster_id: broadcasterId, user_id: user.id, first: 1 },
+      })
+    );
 
     const isVip = vipRes.data.data.length > 0;
 

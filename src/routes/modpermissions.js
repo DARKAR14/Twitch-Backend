@@ -4,55 +4,15 @@
 
 const express = require("express");
 const router = express.Router();
-const { requireAdmin, requireModerator, requireAdminToken } = require("../middleware/roles");
+const { requireAdmin, requireModerator } = require("../middleware/roles");
 const tokenManager = require("../services/tokenManager");
 const twitchApi = require("../services/twitchApi");
-
-// Colección MongoDB para permisos
-let permCol = null;
-async function getPermCol() {
-  if (permCol) return permCol;
-  const { MongoClient } = require("mongodb");
-  const client = new MongoClient(process.env.MONGO_URL || "mongodb://localhost:27017/twitchbot");
-  await client.connect();
-  permCol = client.db("twitchbot").collection("mod_permissions");
-  // Índice único por mod_id
-  await permCol.createIndex({ mod_id: 1 }, { unique: true });
-  return permCol;
-}
-
-// Permisos por defecto cuando un mod no tiene configuración aún
-const DEFAULT_PERMISSIONS = {
-  clips: true,
-  chat: true,
-  stats: true,
-  moderation: true,
-  eventsub: false,
-  modteam: false,
-  "chan-history": false,
-  modperms: false,
-  spotify: false,
-  vip: false,
-  birthdays: false,
-  tts: true,
-  // Futuras pestañas se añaden aquí
-};
-
-// Todas las pestañas disponibles con etiqueta
-const ALL_TABS = [
-  { id: "clips", label: "Clips", icon: "🎬" },
-  { id: "chat", label: "Chat controls", icon: "💬" },
-  { id: "stats", label: "Stats", icon: "📊" },
-  { id: "moderation", label: "Log actividad", icon: "🛡️" },
-  { id: "eventsub", label: "EventSub", icon: "⚡", isAdminTab: true },
-  { id: "modteam", label: "Equipo mod", icon: "👥", isAdminTab: true },
-  { id: "chan-history", label: "Historial cambios", icon: "🕐", isAdminTab: true },
-  { id: "modperms", label: "Panel permisos", icon: "🔑", isAdminTab: true },
-  { id: "spotify", label: "Spotify", icon: "🎵", isAdminTab: false },
-  { id: "vip", label: "VIP", icon: "👑", isAdminTab: false },
-  { id: "birthdays", label: "Cumpleaños", icon: "🎂", isAdminTab: false },
-  { id: "tts", label: "TTS Bot", icon: "🎤", isAdminTab: false },
-];
+const {
+  ALL_TABS,
+  DEFAULT_PERMISSIONS,
+  getCollection: getPermCol,
+  getPermissions,
+} = require("../services/modPermissions");
 
 /**
  * GET /modpermissions/tabs
@@ -66,7 +26,7 @@ router.get("/tabs", requireAdmin, (req, res) => {
  * GET /modpermissions/all
  * Lista todos los mods con sus permisos actuales — solo admin
  */
-router.get("/all", requireModerator, async (req, res) => {
+router.get("/all", requireAdmin, async (req, res) => {
   try {
     const broadcasterId = process.env.TWITCH_BROADCASTER_ID;
     const token = await tokenManager.getBroadcasterToken();
@@ -101,7 +61,7 @@ router.get("/all", requireModerator, async (req, res) => {
  */
 router.get("/me", requireModerator, async (req, res) => {
   try {
-    const { id: userId, role } = req.session.user;
+    const { id: userId, role } = req.authUser;
 
     // Admin siempre tiene todo
     if (role === "admin") {
@@ -110,9 +70,7 @@ router.get("/me", requireModerator, async (req, res) => {
       return res.json({ success: true, permissions: fullPerms, tabs: ALL_TABS });
     }
 
-    const col = await getPermCol();
-    const doc = await col.findOne({ mod_id: userId });
-    const permissions = doc?.permissions || { ...DEFAULT_PERMISSIONS };
+    const permissions = await getPermissions(userId);
 
     res.json({ success: true, permissions, tabs: ALL_TABS });
   } catch (err) {
@@ -127,12 +85,16 @@ router.get("/me", requireModerator, async (req, res) => {
  * Body: { tab: "clips", enabled: true/false }
  * Emite socket a ese mod en tiempo real
  */
-router.patch("/:modId", requireModerator, async (req, res) => {
-  console.log("🔧 PATCH:", req.params.modId, "tab:", req.body.tab, "user:", req.session.user.login);
+router.patch("/:modId", requireAdmin, async (req, res) => {
+  console.log("🔧 PATCH:", req.params.modId, "tab:", req.body.tab, "user:", req.authUser.login);
   const { modId } = req.params;
   const { tab, enabled } = req.body;
 
-  if (!tab || enabled === undefined) {
+  if (!/^\d+$/.test(modId)) {
+    return res.status(400).json({ error: "modId inválido" });
+  }
+
+  if (!tab || typeof enabled !== "boolean") {
     return res.status(400).json({ error: "Se requiere 'tab' y 'enabled'" });
   }
   if (!ALL_TABS.find((t) => t.id === tab)) {
@@ -154,7 +116,7 @@ router.patch("/:modId", requireModerator, async (req, res) => {
           mod_id: modId,
           permissions: currentPerms,
           updated_at: new Date(),
-          updated_by: req.session.user.display_name,
+          updated_by: req.authUser.display_name,
         },
       },
       { upsert: true }
@@ -168,7 +130,7 @@ router.patch("/:modId", requireModerator, async (req, res) => {
         permissions: currentPerms,
         changed_tab: tab,
         enabled: Boolean(enabled),
-        updated_by: req.session.user.display_name,
+        updated_by: req.authUser.display_name,
       });
 
       // También notificar al admin para que el panel se actualice
@@ -195,7 +157,10 @@ router.patch("/:modId", requireModerator, async (req, res) => {
  * PUT /modpermissions/:modId/reset
  * Restaura todos los permisos a default — solo admin
  */
-router.put("/:modId/reset", requireModerator, async (req, res) => {
+router.put("/:modId/reset", requireAdmin, async (req, res) => {
+  if (!/^\d+$/.test(req.params.modId)) {
+    return res.status(400).json({ error: "modId inválido" });
+  }
   try {
     const col = await getPermCol();
     await col.updateOne(

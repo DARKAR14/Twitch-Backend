@@ -6,8 +6,9 @@ const db = require("../services/db");
 
 router.get("/mod-permissions", requireAdminToken, async (req, res) => {
   try {
-    const dbInstance = await db.getDb();
-    const modPermissions = dbInstance.data.mod_permissions || {};
+    const collection = await db.col("settings");
+    const document = await collection.findOne({ _id: "legacy_mod_permissions" });
+    const modPermissions = document?.permissions || {};
     
     res.json({
       success: true,
@@ -20,9 +21,17 @@ router.get("/mod-permissions", requireAdminToken, async (req, res) => {
 
 router.post("/mod-permissions", requireAdminToken, async (req, res) => {
   try {
-    const dbInstance = await db.getDb();
-    dbInstance.data.mod_permissions = req.body.permissions || {};
-    await dbInstance.write();
+    const permissions = req.body.permissions;
+    if (!permissions || typeof permissions !== "object" || Array.isArray(permissions)) {
+      return res.status(400).json({ error: "permissions debe ser un objeto" });
+    }
+
+    const collection = await db.col("settings");
+    await collection.replaceOne(
+      { _id: "legacy_mod_permissions" },
+      { _id: "legacy_mod_permissions", permissions, updated_at: new Date() },
+      { upsert: true }
+    );
     
     res.json({ success: true, message: "Permisos guardados" });
   } catch {

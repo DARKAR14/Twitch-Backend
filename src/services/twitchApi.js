@@ -6,6 +6,12 @@ const axios = require("axios");
 const TWITCH_API = "https://api.twitch.tv/helix";
 const TWITCH_AUTH = "https://id.twitch.tv/oauth2";
 
+function clampInteger(value, fallback, max = 100) {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed < 1) return fallback;
+  return Math.min(parsed, max);
+}
+
 /**
  * Refresca el access token usando el refresh token del usuario
  */
@@ -47,16 +53,16 @@ async function getChannelInfo(broadcasterId, accessToken) {
  */
 // src/services/twitchApi.js
 async function updateChannelInfo(broadcasterId, token, data, userId = broadcasterId) {
-  const response = await axios.patch(
-    `https://api.twitch.tv/helix/channels?broadcaster_id=${broadcasterId}&user_id=${userId}`,
-    data,
-    {
-      headers: {
-        'Client-Id': process.env.TWITCH_CLIENT_ID,
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json'
+  const tokenManager = require("./tokenManager");
+  const response = await tokenManager.withBroadcasterToken((activeToken) =>
+    axios.patch(
+      `${TWITCH_API}/channels`,
+      data,
+      {
+        headers: { ...buildHeaders(activeToken), "Content-Type": "application/json" },
+        params: { broadcaster_id: broadcasterId, user_id: userId },
       }
-    }
+    )
   );
   
   // ✅ FIXED: Manejo robusto respuesta
@@ -86,7 +92,7 @@ async function searchCategories(query, accessToken) {
 async function getClips(broadcasterId, accessToken, { startedAt, endedAt, first = 20, cursor } = {}) {
   const params = {
     broadcaster_id: broadcasterId,
-    first,
+    first: clampInteger(first, 20),
   };
   if (startedAt) params.started_at = startedAt;
   if (endedAt) params.ended_at = endedAt;
@@ -108,7 +114,7 @@ async function getClips(broadcasterId, accessToken, { startedAt, endedAt, first 
 async function getVideos(broadcasterId, accessToken, { first = 20, type = "archive" } = {}) {
   const res = await axios.get(`${TWITCH_API}/videos`, {
     headers: buildHeaders(accessToken),
-    params: { user_id: broadcasterId, first, type },
+    params: { user_id: broadcasterId, first: clampInteger(first, 20), type },
   });
   return res.data.data;
 }
@@ -117,6 +123,7 @@ async function getVideos(broadcasterId, accessToken, { first = 20, type = "archi
  * Obtiene moderadores del canal
  */
 async function getModerators(broadcasterId, accessToken) {
+  const tokenManager = require("./tokenManager");
   const mods = [];
   let cursor = null;
 
@@ -124,10 +131,12 @@ async function getModerators(broadcasterId, accessToken) {
     const params = { broadcaster_id: broadcasterId, first: 100 };
     if (cursor) params.after = cursor;
 
-    const res = await axios.get(`${TWITCH_API}/moderation/moderators`, {
-      headers: buildHeaders(accessToken),
-      params,
-    });
+    const res = await tokenManager.withBroadcasterToken((activeToken) =>
+      axios.get(`${TWITCH_API}/moderation/moderators`, {
+        headers: buildHeaders(activeToken),
+        params,
+      })
+    );
 
     mods.push(...res.data.data);
     cursor = res.data.pagination?.cursor || null;
@@ -140,10 +149,13 @@ async function getModerators(broadcasterId, accessToken) {
  * Obtiene los suscriptores recientes (nuevos seguidores)
  */
 async function getRecentFollowers(broadcasterId, accessToken, { first = 20 } = {}) {
-  const res = await axios.get(`${TWITCH_API}/channels/followers`, {
-    headers: buildHeaders(accessToken),
-    params: { broadcaster_id: broadcasterId, first },
-  });
+  const tokenManager = require("./tokenManager");
+  const res = await tokenManager.withBroadcasterToken((activeToken) =>
+    axios.get(`${TWITCH_API}/channels/followers`, {
+      headers: buildHeaders(activeToken),
+      params: { broadcaster_id: broadcasterId, first: clampInteger(first, 20) },
+    })
+  );
   return res.data.data; // [{ user_id, user_login, user_name, followed_at }]
 }
 
@@ -151,10 +163,13 @@ async function getRecentFollowers(broadcasterId, accessToken, { first = 20 } = {
  * Obtiene usuarios baneados del canal
  */
 async function getBannedUsers(broadcasterId, accessToken, { first = 20 } = {}) {
-  const res = await axios.get(`${TWITCH_API}/moderation/banned`, {
-    headers: buildHeaders(accessToken),
-    params: { broadcaster_id: broadcasterId, first },
-  });
+  const tokenManager = require("./tokenManager");
+  const res = await tokenManager.withBroadcasterToken((activeToken) =>
+    axios.get(`${TWITCH_API}/moderation/banned`, {
+      headers: buildHeaders(activeToken),
+      params: { broadcaster_id: broadcasterId, first: clampInteger(first, 20) },
+    })
+  );
   return res.data.data; // [{ user_id, user_login, expires_at, reason, moderator_id }]
 }
 

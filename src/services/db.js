@@ -20,6 +20,12 @@ async function col(name) {
   return db.collection(name);
 }
 
+function safeInteger(value, fallback, { min = 0, max = 500 } = {}) {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed < min) return fallback;
+  return Math.min(parsed, max);
+}
+
 // ── COMPATIBILIDAD con código que usaba getDb() ────────────────────────────────
 async function getDb() {
   const bansCol = await col("bans");
@@ -67,7 +73,11 @@ async function saveBan(ban) {
 async function getBans({ limit = 50, offset = 0, type } = {}) {
   const c = await col("bans");
   const filter = type ? { type } : {};
-  return c.find(filter).sort({ created_at: -1 }).skip(offset).limit(limit).toArray();
+  return c.find(filter)
+    .sort({ created_at: -1 })
+    .skip(safeInteger(offset, 0, { max: 10000 }))
+    .limit(safeInteger(limit, 50, { min: 1 }))
+    .toArray();
 }
 
 // ── FOLLOWERS ─────────────────────────────────────────────────────────────────
@@ -96,7 +106,11 @@ async function saveFollower(follower) {
 
 async function getFollowers({ limit = 50, offset = 0 } = {}) {
   const c = await col("followers");
-  return c.find({}).sort({ created_at: -1 }).skip(offset).limit(limit).toArray();
+  return c.find({})
+    .sort({ created_at: -1 })
+    .skip(safeInteger(offset, 0, { max: 10000 }))
+    .limit(safeInteger(limit, 50, { min: 1 }))
+    .toArray();
 }
 
 // ── HISTORIAL DE CANAL ────────────────────────────────────────────────────────
@@ -127,7 +141,7 @@ async function saveChannelChange({ title, game_name, game_id, changed_by, change
 
 async function getChannelHistory({ limit = 20 } = {}) {
   const c = await col("channel_history");
-  return c.find({}).sort({ changed_at: -1 }).limit(limit).toArray();
+  return c.find({}).sort({ changed_at: -1 }).limit(safeInteger(limit, 20, { min: 1 })).toArray();
 }
 
 // ── NOTIFICACIONES ────────────────────────────────────────────────────────────

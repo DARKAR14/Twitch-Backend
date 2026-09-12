@@ -4,15 +4,19 @@ const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
 const session = require("express-session");
+const { MongoStore } = require("connect-mongo");
 const passport = require("passport");
 const cors = require("cors");
 const helmet = require("helmet");
 const morgan = require("morgan");
 const rateLimit = require("express-rate-limit");
 const axios = require("axios");
+const swaggerUi = require("swagger-ui-express");
 
 const { configurePassport } = require("./config/passport");
 const { initSocket } = require("./src/socket/socketService");
+const { createOpenApiSpec } = require("./src/openapi");
+const { getAllowedFrontendOrigins } = require("./src/services/frontendUrls");
 
 // Rutas
 const authRoutes = require("./src/routes/auth");
@@ -31,7 +35,8 @@ const modlogRoutes = require("./src/routes/modlog");
 const spotifyRoutes = require("./src/routes/spotify");
 const vipRoutes = require("./src/routes/vip");
 const birthdaysRoutes = require("./src/routes/birthdays");
-const restart = require("./src/routes/restart")
+const restart = require("./src/routes/restart");
+const botRoutes = require("./src/routes/bots");
 
 // ─── Validar variables de entorno ─────────────────────────────────────────────
 const REQUIRED_ENV = [
@@ -47,16 +52,33 @@ if (missingEnv.length > 0) {
   process.exit(1);
 }
 
+if (process.env.NODE_ENV === "production" && process.env.SESSION_SECRET.length < 32) {
+  console.warn("⚠️ SESSION_SECRET debería tener al menos 32 caracteres en producción");
+}
+for (const secretName of ["JWT_SECRET", "TOKEN_ENCRYPTION_KEY", "TOKEN_ENCRYPTION_KEY_PREVIOUS", "EVENTSUB_SECRET", "INTERNAL_API_SECRET"]) {
+  if (process.env.NODE_ENV === "production" && process.env[secretName] && process.env[secretName].length < 32) {
+    console.warn(`⚠️ ${secretName} debería tener al menos 32 caracteres en producción`);
+  }
+}
+for (const secretName of ["JWT_SECRET", "TOKEN_ENCRYPTION_KEY", "INTERNAL_API_SECRET"]) {
+  if (process.env.NODE_ENV === "production" && !process.env[secretName]) {
+    console.warn(`⚠️ ${secretName} no está configurado; se usará una compatibilidad menos aislada`);
+  }
+}
+if (process.env.NODE_ENV === "production" && process.env.PUBLIC_URL && !process.env.EVENTSUB_SECRET) {
+  console.warn("⚠️ EVENTSUB_SECRET no está configurado; EventSub permanecerá bloqueado");
+}
+
 // ─── Inicialización ────────────────────────────────────────────────────────────
 const app = express();
 const server = http.createServer(app);
 
 app.set("trust proxy", 1);
+app.disable("x-powered-by");
 
 // ─── CORS ─────────────────────────────────────────────────────────────────────
 function getAllowedOrigins() {
-  const raw = process.env.FRONTEND_URL || "http://localhost:5173";
-  return raw.split(",").map((u) => u.trim()).filter(Boolean);
+  return getAllowedFrontendOrigins();
 }
 
 function corsOriginHandler(origin, callback) {
@@ -71,7 +93,9 @@ function corsOriginHandler(origin, callback) {
   ) {
     return callback(null, true);
   }
-  callback(new Error(`CORS bloqueado para origen: ${origin}`));
+  const error = new Error(`CORS bloqueado para origen: ${origin}`);
+  error.status = 403;
+  callback(error);
 }
 
 // ─── Socket.io ────────────────────────────────────────────────────────────────
@@ -88,8 +112,19 @@ configurePassport();
 
 // ─── Sesión ───────────────────────────────────────────────────────────────────
 const usingTunnel = process.env.TUNNEL_MODE === "true";
+const sessionStore = MongoStore.create({
+  mongoUrl: process.env.MONGO_URL,
+  dbName: "twitchbot",
+  collectionName: "sessions",
+  ttl: 24 * 60 * 60,
+  touchAfter: 60 * 60,
+});
+sessionStore.on("error", (error) => {
+  console.error("[SessionStore] MongoDB no disponible:", error.message);
+});
 const sessionMiddleware = session({
   secret: process.env.SESSION_SECRET,
+  store: sessionStore,
   resave: false,
   saveUninitialized: false,
   proxy: true,
@@ -113,7 +148,20 @@ app.use(cors({
   allowedHeaders: ["Content-Type", "Authorization"],
 }));
 
-app.use(morgan(process.env.NODE_ENV === "production" ? "combined" : "dev"));
+morgan.token("safe-url", (req) => {
+  try {
+    const parsed = new URL(req.originalUrl, "http://localhost");
+    for (const key of ["code", "state", "token", "access_token", "refresh_token", "secret"]) {
+      if (parsed.searchParams.has(key)) parsed.searchParams.set(key, "[REDACTED]");
+    }
+    return `${parsed.pathname}${parsed.search}`;
+  } catch {
+    return req.path;
+  }
+});
+const productionLogFormat = ':remote-addr - :remote-user [:date[clf]] ":method :safe-url HTTP/:http-version" :status :res[content-length] ":referrer" ":user-agent"';
+const developmentLogFormat = ":method :safe-url :status :response-time ms - :res[content-length]";
+app.use(morgan(process.env.NODE_ENV === "production" ? productionLogFormat : developmentLogFormat));
 
 // Body parsers — eventsub/callback maneja su propio parser para rawBody
 app.use((req, res, next) => {
@@ -129,10 +177,25 @@ app.use(sessionMiddleware);
 app.use(passport.initialize());
 app.use(passport.session());
 
+// Defensa adicional para cookies SameSite=None: CORS ya valida Origin y este
+// control rechaza navegaciones mutables iniciadas explícitamente desde otro sitio.
+app.use((req, res, next) => {
+  if (["GET", "HEAD", "OPTIONS"].includes(req.method)) return next();
+  if (req.path === "/eventsub/callback") return next();
+  if (/^Bearer\s+/i.test(req.headers.authorization || "")) return next();
+  if (req.headers.origin && getAllowedOrigins().includes(req.headers.origin)) return next();
+  if (req.headers["sec-fetch-site"] === "cross-site") {
+    return res.status(403).json({ error: "Petición cross-site rechazada" });
+  }
+  next();
+});
+
 // ─── Rate Limiting ────────────────────────────────────────────────────────────
 app.use(rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 100,
+  standardHeaders: "draft-8",
+  legacyHeaders: false,
   message: { error: "Demasiadas peticiones, espera un momento" },
   skip: (req) => req.path === "/eventsub/callback" || req.path === "/health" || req.path === "/keep-alive" || req.path === "/spotify/overlay",
 }));
@@ -140,8 +203,55 @@ app.use(rateLimit({
 app.use("/auth/twitch", rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 20,
+  standardHeaders: "draft-8",
+  legacyHeaders: false,
   message: { error: "Demasiados intentos de login" },
 }));
+
+// ─── OpenAPI / Swagger ────────────────────────────────────────────────────────
+const openApiSpec = createOpenApiSpec();
+if (process.env.SWAGGER_ENABLED !== "false") {
+  let documentedOrigin = "'self'";
+  try {
+    documentedOrigin = new URL(openApiSpec.servers[0].url).origin;
+  } catch {}
+
+  const docsHelmet = helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'", "'unsafe-inline'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        imgSrc: ["'self'", "data:", "https:"],
+        fontSrc: ["'self'", "data:"],
+        connectSrc: ["'self'", documentedOrigin],
+        objectSrc: ["'none'"],
+        frameAncestors: ["'none'"],
+        upgradeInsecureRequests: null,
+      },
+    },
+    crossOriginEmbedderPolicy: false,
+  });
+
+  app.get("/openapi.json", docsHelmet, (req, res) => {
+    res.set("Cache-Control", "no-store").json(openApiSpec);
+  });
+  app.use(
+    "/docs",
+    docsHelmet,
+    swaggerUi.serve,
+    swaggerUi.setup(openApiSpec, {
+      customSiteTitle: "DarkHub Twitch API",
+      customCss: ".swagger-ui .topbar { display: none }",
+      swaggerOptions: {
+        displayRequestDuration: true,
+        persistAuthorization: false,
+        tryItOutEnabled: false,
+        withCredentials: true,
+      },
+    })
+  );
+}
 
 // ─── io accesible en rutas ────────────────────────────────────────────────────
 app.set("io", io);
@@ -163,6 +273,7 @@ app.use("/spotify", spotifyRoutes);
 app.use("/vip", vipRoutes);
 app.use("/birthdays", birthdaysRoutes);
 app.use("/restart-bot", restart);
+app.use("/bots", botRoutes);
 
 // ─── Health check ─────────────────────────────────────────────────────────────
 app.get("/health", (req, res) => {
@@ -172,6 +283,7 @@ app.get("/health", (req, res) => {
     env: process.env.NODE_ENV,
     broadcaster: process.env.TWITCH_BROADCASTER_LOGIN || "no configurado",
     uptime: Math.floor(process.uptime()) + "s",
+    docs: process.env.SWAGGER_ENABLED === "false" ? null : "/docs",
   });
 });
 
@@ -190,7 +302,7 @@ function startKeepAlive() {
     } catch (err) {
       console.warn("[KeepAlive] ✗", err.message);
     }
-  }, 14 * 60 * 1000);
+  }, 14 * 60 * 1000).unref?.();
   console.log(`[KeepAlive] Iniciado — ping cada 14min`);
 }
 
@@ -200,8 +312,9 @@ app.use((req, res) => {
 });
 
 app.use((err, req, res, next) => {
-  console.error("[Error global]", err);
-  res.status(500).json({
+  console.error("[Error global]", err.message);
+  if (res.headersSent) return next(err);
+  res.status(err.status || 500).json({
     error: "Error interno del servidor",
     message: process.env.NODE_ENV === "development" ? err.message : undefined,
   });
@@ -220,19 +333,12 @@ process.on("unhandledRejection", (reason) => {
 // ─── Socket.io ────────────────────────────────────────────────────────────────
 initSocket(io, sessionMiddleware);
 
-// ─── Spotify monitor ──────────────────────────────────────────────────────────
-try {
-  const { startTrackPolling } = require("./src/services/spotify-monitor"); // ← corregir ruta
-  startTrackPolling(io);
-} catch (err) {
-  console.warn("[Spotify Monitor] Error al iniciar:", err.message); // ← mostrar error
-}
-
 // ─── Arranque ─────────────────────────────────────────────────────────────────
 async function startServer() {
   try {
     // Cargar broadcaster token de MongoDB
     await tokenManager.loadBroadcasterToken().catch(console.error);
+    tokenManager.startBroadcasterTokenMaintenance();
 
     const PORT = process.env.PORT || 3000;
 
@@ -245,12 +351,9 @@ async function startServer() {
       console.log(`║  Canal:     ${(process.env.TWITCH_BROADCASTER_LOGIN || "NO CONFIGURADO").padEnd(28)}║`);
       console.log(`║  Tunnel:    ${(usingTunnel ? "Sí (HTTPS cookies)" : "No (local)").padEnd(28)}║`);
       console.log("╠════════════════════════════════════════╣");
-      const hasToken =
-        tokenManager.broadcasterToken !== null &&
-        tokenManager.broadcasterTokenExpiry !== undefined &&
-        Date.now() < tokenManager.broadcasterTokenExpiry
-          ? "✅ Listo"
-          : "⚠️  Pendiente (admin login)";
+      const hasToken = tokenManager.getBroadcasterTokenStatus().available
+        ? "✅ Listo"
+        : "⚠️  Pendiente (admin login)";
       console.log(`║  Broadcaster token: ${hasToken.padEnd(20)}║`);
       console.log("╚════════════════════════════════════════╝\n");
 
@@ -264,6 +367,13 @@ async function startServer() {
       } catch (err) {
         console.warn("[Spotify Init]", err.message);
       }
+
+      try {
+        const { startTrackPolling } = require("./src/services/spotify-monitor");
+        startTrackPolling(io);
+      } catch (err) {
+        console.warn("[Spotify Monitor] Error al iniciar:", err.message);
+      }
     });
   } catch (error) {
     console.error("Error iniciando servidor:", error);
@@ -271,6 +381,6 @@ async function startServer() {
   }
 }
 
-module.exports = { app, server, io };
+module.exports = { app, server, io, sessionStore };
 
-startServer();
+if (require.main === module) startServer();

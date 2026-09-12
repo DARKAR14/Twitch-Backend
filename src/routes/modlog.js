@@ -7,7 +7,7 @@
 const express = require("express");
 const router = express.Router();
 const axios = require("axios");
-const { requireAdmin } = require("../middleware/roles");
+const { requireAdmin, requirePermission } = require("../middleware/roles");
 const tokenManager = require("../services/tokenManager");
 const db = require("../services/db");
 
@@ -76,17 +76,23 @@ router.get("/actions", requireAdmin, async (req, res) => {
 router.get("/banned-active", requireAdmin, async (req, res) => {
   try {
     const broadcasterId = process.env.TWITCH_BROADCASTER_ID;
-    const token = await tokenManager.getBroadcasterToken();
-    if (!token) return res.status(503).json({ error: "Token del broadcaster no disponible" });
-
     const { first = 20, mod_id } = req.query;
-    const params = { broadcaster_id: broadcasterId, first: parseInt(first) };
+    if (mod_id !== undefined && (typeof mod_id !== "string" || !/^\d+$/.test(mod_id))) {
+      return res.status(400).json({ error: "mod_id inválido" });
+    }
+    const requestedFirst = Number.parseInt(first, 10);
+    const params = {
+      broadcaster_id: broadcasterId,
+      first: Number.isFinite(requestedFirst) ? Math.min(Math.max(requestedFirst, 1), 100) : 20,
+    };
     if (mod_id) params.user_id = mod_id;
 
-    const res2 = await axios.get(`${TWITCH_API}/moderation/banned`, {
-      headers: buildHeaders(token),
-      params,
-    });
+    const res2 = await tokenManager.withBroadcasterToken((token) =>
+      axios.get(`${TWITCH_API}/moderation/banned`, {
+        headers: buildHeaders(token),
+        params,
+      })
+    );
 
     const banned = res2.data.data.map((b) => ({
       user_id:        b.user_id,
@@ -125,20 +131,17 @@ router.get("/banned-active", requireAdmin, async (req, res) => {
  * Timeouts que expiran en menos de 2h (para la pestaña de Timeouts)
  * Acceso: mods también pueden verlo
  */
-router.get("/timeouts-expiring", async (req, res) => {
-  if (!req.session?.user) return res.status(401).json({ error: "No autenticado" });
-
+router.get("/timeouts-expiring", requirePermission("moderation"), async (req, res) => {
   try {
     const broadcasterId = process.env.TWITCH_BROADCASTER_ID;
-    const token = await tokenManager.getBroadcasterToken();
-    if (!token) return res.status(503).json({ error: "Token del broadcaster no disponible" });
-
     const twoHoursMs = 2 * 60 * 60 * 1000;
 
-    const response = await axios.get(`${TWITCH_API}/moderation/banned`, {
-      headers: buildHeaders(token),
-      params: { broadcaster_id: broadcasterId, first: 100 },
-    });
+    const response = await tokenManager.withBroadcasterToken((token) =>
+      axios.get(`${TWITCH_API}/moderation/banned`, {
+        headers: buildHeaders(token),
+        params: { broadcaster_id: broadcasterId, first: 100 },
+      })
+    );
 
     const expiring = response.data.data
       .filter((b) => {
