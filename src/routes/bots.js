@@ -7,6 +7,25 @@ const router = express.Router();
 const ttsPermission = requirePermission("tts");
 const risitasPermission = requirePermission("risitas");
 
+for (const [method, route, upstreamPath] of [
+  ["get", "/risitas/birthday", "/api/v1/birthday/settings"],
+  ["put", "/risitas/birthday", "/api/v1/birthday/settings"],
+  ["post", "/risitas/birthday/preview", "/api/v1/birthday/preview"],
+]) {
+  router[method](route, risitasPermission, async (req, res) => {
+    try {
+      const upstream = await requestBot("risitas", {
+        method: method.toUpperCase(), path: upstreamPath,
+        ...(method !== "get" ? { data: { settings: req.body?.settings, revision: req.body?.revision } } : {}),
+      });
+      res.set("Cache-Control", "no-store");
+      return res.status(upstream.status).json(upstream.data);
+    } catch (error) {
+      return sendBotError(res, error, "Configuración de cumpleaños de Risitas");
+    }
+  });
+}
+
 function validIdentifier(value, maxLength = 100) {
   return typeof value === "string"
     && value.length > 0

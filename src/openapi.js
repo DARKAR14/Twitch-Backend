@@ -450,6 +450,19 @@ function createOpenApiSpec() {
         }),
       },
       "/bots/risitas/overview": { get: secured("Bots", "Estado, comandos y embed de Risitas Bot", { description: "Requiere permiso `risitas`." }) },
+      "/bots/risitas/birthday": {
+        get: secured("Bots", "Leer configuración y destinos de cumpleaños", { description: "Requiere permiso `risitas`." }),
+        put: secured("Bots", "Guardar configuración de cumpleaños", {
+          description: "Requiere permiso `risitas`. Envía settings completo y revision; devuelve 409 ante una edición concurrente.",
+          requestBody: jsonBody({ type: "object", required: ["settings", "revision"], properties: {
+            settings: { type: "object" }, revision: { type: "integer", minimum: 0 },
+          } }),
+        }),
+      },
+      "/bots/risitas/birthday/preview": { post: secured("Bots", "Previsualizar cumpleaños sin enviar", {
+        description: "Requiere permiso `risitas`. No guarda ni envía mensajes a Discord.",
+        requestBody: jsonBody({ type: "object", required: ["settings"], properties: { settings: { type: "object" } } }),
+      }) },
       "/bots/risitas/commands/{name}": {
         patch: secured("Bots", "Activar o desactivar comando de Risitas Bot", {
           description: "Requiere permiso `risitas`.",
