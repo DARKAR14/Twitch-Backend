@@ -82,3 +82,17 @@ Produce 64 caracteres hexadecimales. Los textos entre <...> son instrucciones, n
 7. Comprobar inicio de sesion, callbacks, Socket.IO y una recarga directa de /dashboard. Revisar logs de los servicios tras el despliegue.
 
 No se puede declarar validacion integral de produccion hasta completar las consultas autenticadas, OAuth y reproduccion OBS. El backend tiene timeout de 10 segundos hacia bots; comprobar respuesta tras periodos de inactividad si el servicio se suspende.
+
+
+## Delegar la gestión de permisos del panel
+
+El administrador principal (`TWITCH_BROADCASTER_ID`) puede activar **Gestionar permisos**
+(`manage_permissions`) en la matriz de permisos. Se guarda en `twitchbot.mod_permissions`
+y está desactivado por defecto. Este permiso incluye acceso al panel aunque **Panel permisos**
+(solo lectura) esté desactivado.
+
+El gestor puede cambiar permisos de otros moderadores, pero no los suyos ni los del
+administrador principal. Solo este último puede conceder o retirar `manage_permissions`;
+el Reset de un gestor conserva esa autorización. La API comprueba el permiso en MongoDB
+en cada escritura, por lo que revocarlo no requiere cerrar sesión. Esto delega la gestión
+de permisos del panel, no el rol de broadcaster ni los roles de Twitch.

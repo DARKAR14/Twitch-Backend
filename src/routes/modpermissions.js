@@ -14,6 +14,30 @@ const {
   getPermissions,
 } = require("../services/modPermissions");
 
+// Viewing the matrix and delegating management are separate capabilities.
+async function requirePermissionPanel(req, res, next) {
+  if (req.authUser.id === String(process.env.TWITCH_BROADCASTER_ID)) return next();
+  try {
+    const permissions = await getPermissions(req.authUser.id);
+    if (permissions.modperms || permissions.manage_permissions) return next();
+    return res.status(403).json({ error: "No tienes acceso al panel de permisos." });
+  } catch {
+    return res.status(503).json({ error: "No se pudieron validar los permisos." });
+  }
+}
+
+function protectPermissionTarget(req, res, next) {
+  const ownerId = String(process.env.TWITCH_BROADCASTER_ID);
+  if (!/^\d+$/.test(req.params.modId)) return res.status(400).json({ error: "modId inválido" });
+  if (req.params.modId === ownerId) {
+    return res.status(403).json({ error: "Los permisos del administrador principal no se pueden modificar." });
+  }
+  if (req.authUser.id !== ownerId && req.params.modId === req.authUser.id) {
+    return res.status(403).json({ error: "No puedes modificar tus propios permisos." });
+  }
+  next();
+}
+
 /**
  * GET /modpermissions/tabs
  * Devuelve los tabs disponibles (para que el frontend sepa qué checkboxes mostrar)
@@ -24,9 +48,9 @@ router.get("/tabs", requireAdmin, (req, res) => {
 
 /**
  * GET /modpermissions/all
- * Lista los permisos para el admin o mods autorizados; solo el admin puede editarlos
+ * Lista los permisos para el admin o mods autorizados; los gestores autorizados pueden editarlos
  */
-router.get("/all", requirePermission("modperms"), async (req, res) => {
+router.get("/all", requireModerator, requirePermissionPanel, async (req, res) => {
   try {
     const broadcasterId = process.env.TWITCH_BROADCASTER_ID;
     const token = await tokenManager.getBroadcasterToken();
@@ -48,8 +72,10 @@ router.get("/all", requirePermission("modperms"), async (req, res) => {
       permissions: { ...DEFAULT_PERMISSIONS, ...(permsMap[mod.user_id] || {}) },
     }));
 
+    const owner = req.authUser.id === String(process.env.TWITCH_BROADCASTER_ID);
+    const permissions = owner ? null : await getPermissions(req.authUser.id);
     res.json({ success: true, mods: result, tabs: ALL_TABS,
-      can_edit: req.authUser.id === String(process.env.TWITCH_BROADCASTER_ID) });
+      can_edit: owner || permissions.manage_permissions === true, can_delegate: owner });
   } catch (err) {
     console.error("[ModPerms All]", err.message);
     res.status(500).json({ error: err.message });
@@ -82,11 +108,11 @@ router.get("/me", requireModerator, async (req, res) => {
 
 /**
  * PATCH /modpermissions/:modId
- * Actualiza UN permiso de un mod — solo admin
+ * Actualiza UN permiso de otro mod — administrador o gestor autorizado
  * Body: { tab: "clips", enabled: true/false }
  * Emite socket a ese mod en tiempo real
  */
-router.patch("/:modId", requireAdmin, async (req, res) => {
+router.patch("/:modId", requirePermission("manage_permissions"), protectPermissionTarget, async (req, res) => {
   console.log("🔧 PATCH:", req.params.modId, "tab:", req.body.tab, "user:", req.authUser.login);
   const { modId } = req.params;
   const { tab, enabled } = req.body;
@@ -102,26 +128,21 @@ router.patch("/:modId", requireAdmin, async (req, res) => {
     return res.status(400).json({ error: `Tab '${tab}' no existe` });
   }
 
+  if (tab === "manage_permissions" && req.authUser.id !== String(process.env.TWITCH_BROADCASTER_ID)) {
+    return res.status(403).json({ error: "Solo el administrador principal puede conceder o retirar Gestionar permisos." });
+  }
+
   try {
     const col = await getPermCol();
 
-    // Upsert — si no existe el doc, créalo con defaults primero
-    const existing = await col.findOne({ mod_id: modId });
-    const currentPerms = existing?.permissions || { ...DEFAULT_PERMISSIONS };
-    currentPerms[tab] = Boolean(enabled);
-
+    // Update only the selected permission so concurrent edits do not overwrite each other.
     await col.updateOne(
       { mod_id: modId },
-      {
-        $set: {
-          mod_id: modId,
-          permissions: currentPerms,
-          updated_at: new Date(),
-          updated_by: req.authUser.display_name,
-        },
-      },
+      { $set: { [`permissions.${tab}`]: enabled, updated_at: new Date(),
+        updated_by: req.authUser.display_name, updated_by_id: req.authUser.id } },
       { upsert: true }
     );
+    const currentPerms = await getPermissions(modId);
 
     // Emitir en tiempo real al mod específico
     const io = req.app.get("io");
@@ -156,28 +177,33 @@ router.patch("/:modId", requireAdmin, async (req, res) => {
 
 /**
  * PUT /modpermissions/:modId/reset
- * Restaura todos los permisos a default — solo admin
+ * Restaura permisos normales; solo el administrador puede restablecer la delegación
  */
-router.put("/:modId/reset", requireAdmin, async (req, res) => {
+router.put("/:modId/reset", requirePermission("manage_permissions"), protectPermissionTarget, async (req, res) => {
   if (!/^\d+$/.test(req.params.modId)) {
     return res.status(400).json({ error: "modId inválido" });
   }
   try {
     const col = await getPermCol();
-    await col.updateOne(
-      { mod_id: req.params.modId },
-      { $set: { permissions: { ...DEFAULT_PERMISSIONS }, updated_at: new Date() } },
-      { upsert: true }
-    );
+    const owner = req.authUser.id === String(process.env.TWITCH_BROADCASTER_ID);
+    const changes = { updated_at: new Date(), updated_by: req.authUser.display_name,
+      updated_by_id: req.authUser.id };
+    for (const [permission, value] of Object.entries(DEFAULT_PERMISSIONS)) {
+      // A delegated manager must not revoke another manager through Reset.
+      if (!owner && permission === "manage_permissions") continue;
+      changes[`permissions.${permission}`] = value;
+    }
+    await col.updateOne({ mod_id: req.params.modId }, { $set: changes }, { upsert: true });
+    const permissions = await getPermissions(req.params.modId);
 
     const io = req.app.get("io");
     if (io) {
       io.to(`mod:${req.params.modId}`).emit("permissions:updated", {
-        permissions: { ...DEFAULT_PERMISSIONS },
+        permissions,
       });
     }
 
-    res.json({ success: true, permissions: { ...DEFAULT_PERMISSIONS } });
+    res.json({ success: true, permissions });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
