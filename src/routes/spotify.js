@@ -3,6 +3,7 @@ const express = require("express");
 const router = express.Router();
 const axios = require("axios");
 const crypto = require("crypto");
+const { spotifyFailure } = require("../services/spotifyErrors");
 const { requireAdmin, requirePermission } = require("../middleware/roles");
 const { activeKeyId, activeKeySource, decryptSecret, encryptSecret } = require("../services/secretCipher");
 const {
@@ -19,6 +20,7 @@ const SPOTIFY_API = "https://api.spotify.com/v1";
 // ── Colección MongoDB ──────────────────────────────────────────────────────────
 let spotifyCol = null;
 let spotifyRefreshPromise = null;
+let rejectedRefreshToken = null;
 async function getCol() {
   if (spotifyCol) return spotifyCol;
   const { MongoClient } = require("mongodb");
@@ -88,6 +90,12 @@ async function getValidAccessToken() {
   const tokens = await getSpotifyTokens();
   if (!tokens) throw new Error("Spotify no vinculado. El admin debe conectar su cuenta.");
 
+  if (tokens.refresh_token === rejectedRefreshToken) {
+    const error = new Error("Spotify requiere una nueva autorización");
+    error.code = "SPOTIFY_REAUTH_REQUIRED";
+    throw error;
+  }
+
   // Token vigente
   if (new Date(tokens.expires_at).getTime() - Date.now() > 60 * 1000) return tokens.access_token;
 
@@ -116,7 +124,10 @@ async function getValidAccessToken() {
         res.data.expires_in
       );
       return res.data.access_token;
-    })().finally(() => {
+    })().catch((error) => {
+      if (error.response?.data?.error === "invalid_grant") rejectedRefreshToken = tokens.refresh_token;
+      throw error;
+    }).finally(() => {
       spotifyRefreshPromise = null;
     });
   }
@@ -275,7 +286,8 @@ router.get("/status", requireSpotifyPermission, async (req, res) => {
 
     res.json({ connected: true, current, queue });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    const failure = spotifyFailure(err);
+    res.status(failure.status).json(failure.body);
   }
 });
 

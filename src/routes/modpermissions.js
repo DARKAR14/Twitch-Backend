@@ -4,7 +4,7 @@
 
 const express = require("express");
 const router = express.Router();
-const { requireAdmin, requireModerator } = require("../middleware/roles");
+const { requireAdmin, requireModerator, requirePermission } = require("../middleware/roles");
 const tokenManager = require("../services/tokenManager");
 const twitchApi = require("../services/twitchApi");
 const {
@@ -24,9 +24,9 @@ router.get("/tabs", requireAdmin, (req, res) => {
 
 /**
  * GET /modpermissions/all
- * Lista todos los mods con sus permisos actuales — solo admin
+ * Lista los permisos para el admin o mods autorizados; solo el admin puede editarlos
  */
-router.get("/all", requireAdmin, async (req, res) => {
+router.get("/all", requirePermission("modperms"), async (req, res) => {
   try {
     const broadcasterId = process.env.TWITCH_BROADCASTER_ID;
     const token = await tokenManager.getBroadcasterToken();
@@ -45,10 +45,11 @@ router.get("/all", requireAdmin, async (req, res) => {
       user_id: mod.user_id,
       user_login: mod.user_login,
       user_name: mod.user_name,
-      permissions: permsMap[mod.user_id] || { ...DEFAULT_PERMISSIONS },
+      permissions: { ...DEFAULT_PERMISSIONS, ...(permsMap[mod.user_id] || {}) },
     }));
 
-    res.json({ success: true, mods: result, tabs: ALL_TABS });
+    res.json({ success: true, mods: result, tabs: ALL_TABS,
+      can_edit: req.authUser.id === String(process.env.TWITCH_BROADCASTER_ID) });
   } catch (err) {
     console.error("[ModPerms All]", err.message);
     res.status(500).json({ error: err.message });
